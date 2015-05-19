@@ -5,9 +5,9 @@ libraries and runtimes, for building web, server, and mobile apps.
 
 ## Using Dart
 
-Visit the [Dart website][website] to learn more about the
+Visit the [dartlang.org][website] to learn more about the
 [language][lang], [tools][tools],
-[tutorials][codelab], and more.
+[getting started][codelab], and more.
 
 Browse [pub.dartlang.org][pubsite] for more packages and libraries contributed
 by the community and the Dart team.
@@ -16,12 +16,11 @@ by the community and the Dart team.
 
 The easiest way to contribute to Dart is to [file issues][dartbug].
 
-If you want to contibute a patch,
-you can learn more about our [contributing workflows][contrib].
+You can also contribute patches, as described in [Contributing][contrib].
 
 ## License
 
-For license information, please see [LICENSE][license].
+See [LICENSE][license].
 
 [website]: https://www.dartlang.org
 [license]: https://github.com/dart-lang/sdk/blob/master/LICENSE
