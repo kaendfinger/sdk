@@ -12,7 +12,7 @@ abstract class WebSocketStatus {
   static const int GOING_AWAY = 1001;
   static const int PROTOCOL_ERROR = 1002;
   static const int UNSUPPORTED_DATA = 1003;
-  static const int RESERVED_1004  = 1004;
+  static const int RESERVED_1004 = 1004;
   static const int NO_STATUS_RECEIVED = 1005;
   static const int ABNORMAL_CLOSURE = 1006;
   static const int INVALID_FRAME_PAYLOAD_DATA = 1007;
@@ -21,6 +21,100 @@ abstract class WebSocketStatus {
   static const int MISSING_MANDATORY_EXTENSION = 1010;
   static const int INTERNAL_SERVER_ERROR = 1011;
   static const int RESERVED_1015 = 1015;
+}
+
+/**
+ * The [CompressionOptions] class allows you to control
+ * the options of WebSocket compression.
+ */
+class CompressionOptions {
+  /**
+   * Default WebSocket Compression options.
+   * Compression will be enabled with the following options:
+   * clientNoContextTakeover: false
+   * serverNoContextTakeover: false
+   * clientMaxWindowBits: 15
+   * serverMaxWindowBits: 15
+   */
+  static const CompressionOptions DEFAULT = const CompressionOptions();
+
+  /**
+   * Disables WebSocket Compression.
+   */
+  static const CompressionOptions OFF =
+      const CompressionOptions(enabled: false);
+
+  /**
+   * Control whether the client will reuse it's compression instances.
+   */
+  final bool clientNoContextTakeover;
+
+  /**
+   * Control whether the server will reuse it's compression instances.
+   */
+  final bool serverNoContextTakeover;
+
+  /**
+   * Sets the Max Window Bits for the Client.
+   */
+  final int clientMaxWindowBits;
+
+  /**
+   * Sets the Max Window Bits for the Server.
+   */
+  final int serverMaxWindowBits;
+
+  /**
+   * Enables or disables WebSocket compression.
+   */
+  final bool enabled;
+
+  const CompressionOptions(
+      {this.clientNoContextTakeover: false,
+      this.serverNoContextTakeover: false,
+      this.clientMaxWindowBits,
+      this.serverMaxWindowBits,
+      this.enabled: true});
+
+  /**
+   * Create a Compression Header
+   */
+  String _createHeader([List<String> requested]) {
+    if (!enabled) {
+      return "";
+    }
+
+    var header = _WebSocketImpl.PER_MESSAGE_DEFLATE;
+
+    if (requested == null) {
+      header += "; client_max_window_bits";
+    } else {
+      if (requested.contains("client_max_window_bits")) {
+        var myMaxWindowBits =
+            clientMaxWindowBits == null ? _WebSocketImpl.DEFAULT_WINDOW_BITS : clientMaxWindowBits;
+        header += "; client_max_window_bits=${myMaxWindowBits}";
+      }
+    }
+
+    if (clientNoContextTakeover &&
+        (requested != null &&
+            requested.contains("client_no_context_takeover"))) {
+      header += "; client_no_context_takeover";
+    }
+
+    if (serverNoContextTakeover &&
+        (requested != null &&
+            requested.contains("server_no_context_takeover"))) {
+      header += "; server_no_context_takeover";
+    }
+
+    if (requested != null) {
+      var mwb = serverMaxWindowBits == null ? _WebSocketImpl.DEFAULT_WINDOW_BITS : serverMaxWindowBits;
+      header += "; server_max_window_bits=${mwb}";
+    }
+
+    return header;
+  }
 }
 
 /**
@@ -53,7 +147,6 @@ abstract class WebSocketStatus {
  */
 abstract class WebSocketTransformer
     implements StreamTransformer<HttpRequest, WebSocket> {
-
   /**
    * Create a new [WebSocketTransformer].
    *
@@ -63,8 +156,10 @@ abstract class WebSocketTransformer
    * completing with a [String]. The [String] must exist in the list of
    * protocols.
    */
-  factory WebSocketTransformer({protocolSelector(List<String> protocols)})
-      => new _WebSocketTransformerImpl(protocolSelector);
+  factory WebSocketTransformer(
+          {protocolSelector(List<String> protocols),
+          CompressionOptions compression: CompressionOptions.DEFAULT}) =>
+      new _WebSocketTransformerImpl(protocolSelector, compression);
 
   /**
    * Upgrades a [HttpRequest] to a [WebSocket] connection. If the
@@ -80,8 +175,10 @@ abstract class WebSocketTransformer
    * protocols.
    */
   static Future<WebSocket> upgrade(HttpRequest request,
-                                   {protocolSelector(List<String> protocols)}) {
-    return _WebSocketTransformerImpl._upgrade(request, protocolSelector);
+      {protocolSelector(List<String> protocols),
+      CompressionOptions compression: CompressionOptions.DEFAULT}) {
+    return _WebSocketTransformerImpl._upgrade(
+        request, protocolSelector, compression);
   }
 
   /**
@@ -91,7 +188,6 @@ abstract class WebSocketTransformer
     return _WebSocketTransformerImpl._isUpgradeRequest(request);
   }
 }
-
 
 /**
  * A two-way HTTP communication object for client or server applications.
@@ -152,8 +248,7 @@ abstract class WebSocket implements Stream, StreamSink {
    * authentication when setting up the connection.
    */
   static Future<WebSocket> connect(String url,
-                                   {Iterable<String> protocols,
-                                    Map<String, dynamic> headers}) =>
+          {Iterable<String> protocols, Map<String, dynamic> headers}) =>
       _WebSocketImpl.connect(url, protocols, headers);
 
   @Deprecated('This constructor will be removed in Dart 2.0. Use `implements`'
@@ -175,13 +270,16 @@ abstract class WebSocket implements Stream, StreamSink {
    * act as the client and mask the messages it sends. If it's `true`, it will
    * act as the server and will not mask its messages.
    */
-  factory WebSocket.fromUpgradedSocket(Socket socket, {String protocol,
-        bool serverSide}) {
+  factory WebSocket.fromUpgradedSocket(Socket socket,
+      {String protocol,
+      bool serverSide,
+      CompressionOptions compression: CompressionOptions.DEFAULT}) {
     if (serverSide == null) {
       throw new ArgumentError("The serverSide argument must be passed "
           "explicitly to WebSocket.fromUpgradedSocket.");
     }
-    return new _WebSocketImpl._fromSocket(socket, protocol, serverSide);
+    return new _WebSocketImpl._fromSocket(
+        socket, protocol, compression, serverSide);
   }
 
   /**
@@ -238,9 +336,10 @@ abstract class WebSocket implements Stream, StreamSink {
   Future addStream(Stream stream);
 }
 
-
 class WebSocketException implements IOException {
   final String message;
+
   const WebSocketException([this.message = ""]);
+
   String toString() => "WebSocketException: $message";
 }
