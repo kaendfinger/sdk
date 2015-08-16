@@ -77,6 +77,8 @@ class JSONStream : ValueObject {
   TextBuffer* buffer() { return &buffer_; }
   const char* ToCString() { return buffer_.buf(); }
 
+  void Steal(const char** buffer, intptr_t* buffer_length);
+
   void set_reply_port(Dart_Port port);
 
   void SetParams(const char** param_keys, const char** param_values,
@@ -106,6 +108,7 @@ class JSONStream : ValueObject {
 
  private:
   void Clear();
+  void PostNullReply(Dart_Port port);
 
   void OpenObject(const char* property_name = NULL);
   void CloseObject();

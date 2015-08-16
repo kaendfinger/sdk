@@ -4,35 +4,27 @@
 
 library elements;
 
-
+import '../compiler.dart' show
+    Compiler,
+    isPrivateName;
+import '../constants/constructors.dart';
 import '../constants/expressions.dart';
+import '../dart_types.dart';
+import '../diagnostics/diagnostic_listener.dart';
+import '../diagnostics/messages.dart' show MessageKind;
+import '../diagnostics/source_span.dart' show
+    SourceSpan;
+import '../diagnostics/spannable.dart' show
+    Spannable;
+import '../resolution/resolution.dart';
+import '../ordered_typeset.dart' show OrderedTypeSet;
+import '../scanner/scannerlib.dart' show
+    Token,
+    isUserDefinableOperator,
+    isMinusOperator;
+import '../script.dart';
 import '../tree/tree.dart';
 import '../util/util.dart';
-import '../resolution/resolution.dart';
-
-import '../dart2jslib.dart' show InterfaceType,
-                                 DartType,
-                                 TypeVariableType,
-                                 TypedefType,
-                                 DualKind,
-                                 MessageKind,
-                                 DiagnosticListener,
-                                 Script,
-                                 FunctionType,
-                                 Selector,
-                                 SourceSpan,
-                                 Constant,
-                                 Compiler,
-                                 Backend,
-                                 isPrivateName;
-
-import '../dart_types.dart';
-
-import '../scanner/scannerlib.dart' show Token,
-                                         isUserDefinableOperator,
-                                         isMinusOperator;
-
-import '../ordered_typeset.dart' show OrderedTypeSet;
 
 import 'visitor.dart' show ElementVisitor;
 

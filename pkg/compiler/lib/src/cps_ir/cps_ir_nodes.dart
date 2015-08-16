@@ -519,6 +519,31 @@ class ApplyBuiltinOperator extends Primitive {
   bool get isSafeForReordering => true;
 }
 
+/// Apply a built-in method.
+///
+/// It must be known that the arguments have the proper types.
+class ApplyBuiltinMethod extends Primitive {
+  BuiltinMethod method;
+  Reference<Primitive> receiver;
+  List<Reference<Primitive>> arguments;
+  final SourceInformation sourceInformation;
+
+  bool receiverIsNotNull;
+
+  ApplyBuiltinMethod(this.method,
+                     Primitive receiver,
+                     List<Primitive> arguments,
+                     this.sourceInformation,
+                     {this.receiverIsNotNull: false})
+      : this.receiver = new Reference<Primitive>(receiver),
+        this.arguments = _referenceList(arguments);
+
+  accept(Visitor visitor) => visitor.visitApplyBuiltinMethod(this);
+
+  bool get isSafeForElimination => false;
+  bool get isSafeForReordering => false;
+}
+
 /// Throw a value.
 ///
 /// Throw is an expression, i.e., it always occurs in tail position with
@@ -885,7 +910,9 @@ class Constant extends Primitive {
   final values.ConstantValue value;
   final SourceInformation sourceInformation;
 
-  Constant(this.value, {this.sourceInformation});
+  Constant(this.value, {this.sourceInformation}) {
+    assert(value != null);
+  }
 
   accept(Visitor visitor) => visitor.visitConstant(this);
 
@@ -1087,6 +1114,20 @@ class TypeExpression extends Primitive {
   bool get isSafeForReordering => true;
 }
 
+class Await extends CallExpression {
+  final Reference<Primitive> input;
+  final Reference<Continuation> continuation;
+
+  Await(Primitive input, Continuation continuation)
+    : this.input = new Reference<Primitive>(input),
+      this.continuation = new Reference<Continuation>(continuation);
+
+  @override
+  accept(Visitor visitor) {
+    return visitor.visitAwait(this);
+  }
+}
+
 List<Reference<Primitive>> _referenceList(Iterable<Primitive> definitions) {
   return definitions.map((e) => new Reference<Primitive>(e)).toList();
 }
@@ -1118,6 +1159,7 @@ abstract class Visitor<T> {
   T visitGetLazyStatic(GetLazyStatic node);
   T visitSetField(SetField node);
   T visitUnreachable(Unreachable node);
+  T visitAwait(Await node);
 
   // Definitions.
   T visitLiteralList(LiteralList node);
@@ -1139,6 +1181,7 @@ abstract class Visitor<T> {
   T visitCreateInvocationMirror(CreateInvocationMirror node);
   T visitTypeTest(TypeTest node);
   T visitApplyBuiltinOperator(ApplyBuiltinOperator node);
+  T visitApplyBuiltinMethod(ApplyBuiltinMethod node);
   T visitGetLength(GetLength node);
   T visitGetIndex(GetIndex node);
   T visitSetIndex(SetIndex node);
@@ -1152,10 +1195,10 @@ abstract class Visitor<T> {
 
 /// Visits all non-recursive children of a CPS term, i.e. anything
 /// not of type [Expression] or [Continuation].
-/// 
+///
 /// Note that the non-recursive nodes can contain other nodes inside of them,
 /// e.g. [Branch] contains an [IsTrue] which contains a [Reference].
-/// 
+///
 /// The `process*` methods are called in pre-order for every node visited.
 /// These can be overridden without disrupting the visitor traversal.
 class LeafVisitor implements Visitor {
@@ -1409,6 +1452,13 @@ class LeafVisitor implements Visitor {
     node.arguments.forEach(processReference);
   }
 
+  processApplyBuiltinMethod(ApplyBuiltinMethod node) {}
+  visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    processApplyBuiltinMethod(node);
+    processReference(node.receiver);
+    node.arguments.forEach(processReference);
+  }
+
   processForeignCode(ForeignCode node) {}
   visitForeignCode(ForeignCode node) {
     processForeignCode(node);
@@ -1421,6 +1471,13 @@ class LeafVisitor implements Visitor {
   processUnreachable(Unreachable node) {}
   visitUnreachable(Unreachable node) {
     processUnreachable(node);
+  }
+
+  processAwait(Await node) {}
+  visitAwait(Await node) {
+    processAwait(node);
+    processReference(node.input);
+    processReference(node.continuation);
   }
 
   processGetLength(GetLength node) {}
@@ -1449,25 +1506,25 @@ typedef void StackAction();
 
 /// Calls `process*` for all nodes in a tree.
 /// For simple usage, only override the `process*` methods.
-/// 
+///
 /// To avoid deep recursion, this class uses an "action stack" containing
 /// callbacks to be invoked after the processing of some term has finished.
-/// 
+///
 /// To avoid excessive overhead from the action stack, basic blocks of
 /// interior nodes are iterated in a loop without using the action stack.
-/// 
+///
 /// The iteration order can be controlled by overriding the `traverse*`
 /// methods for [LetCont], [LetPrim], [LetMutable], [LetHandler] and
 /// [Continuation].
-/// 
+///
 /// The `traverse*` methods return the expression to visit next, and may
 /// push other subterms onto the stack using [push] or [pushAction] to visit
 /// them later. Actions pushed onto the stack will be executed after the body
 /// has been processed (and the stack actions it pushed have been executed).
-/// 
-/// By default, the `traverse` methods visit all non-recursive subterms, 
+///
+/// By default, the `traverse` methods visit all non-recursive subterms,
 /// push all bound continuations on the stack, and return the body of the term.
-/// 
+///
 /// Subclasses should not override the `visit` methods for the nodes that have
 /// a `traverse` method.
 class RecursiveVisitor extends LeafVisitor {

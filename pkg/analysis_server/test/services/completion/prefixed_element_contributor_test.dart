@@ -217,6 +217,13 @@ void f(C<int> c) {
     });
   }
 
+  test_keyword() {
+    addTestSource('class C { static C get instance => null; } main() {C.in^}');
+    return computeFull((bool result) {
+      assertSuggestGetter('instance', 'C');
+    });
+  }
+
   test_libraryPrefix() {
     // SimpleIdentifier  PrefixedIdentifier  ExpressionStatement
     addTestSource('import "dart:async" as bar; foo() {bar.^}');
@@ -231,6 +238,15 @@ void f(C<int> c) {
     addTestSource('import "dart:async" as bar; foo() {bar.^ print("f")}');
     return computeFull((bool result) {
       assertSuggestClass('Future');
+    });
+  }
+
+  test_libraryPrefix3() {
+    // SimpleIdentifier  MethodInvocation  ExpressionStatement
+    addTestSource('import "dart:async" as bar; foo() {new bar.F^ print("f")}');
+    return computeFull((bool result) {
+      assertSuggestConstructor('Future');
+      assertSuggestConstructor('Future.delayed');
     });
   }
 

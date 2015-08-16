@@ -6,31 +6,29 @@ library dart2js.library_loader;
 
 import 'dart:async';
 
-import 'dart2jslib.dart' show
-    Compiler,
-    CompilerTask,
-    DiagnosticListener,
-    MessageKind,
-    Script,
+import 'common/tasks.dart' show
+    CompilerTask;
+import 'compiler.dart' show
+    Compiler;
+import 'diagnostics/diagnostic_listener.dart';
+import 'diagnostics/invariant.dart' show
     invariant;
-
+import 'diagnostics/messages.dart' show
+    MessageKind;
 import 'elements/elements.dart' show
     CompilationUnitElement,
     Element,
     LibraryElement,
     PrefixElement;
-
 import 'elements/modelx.dart' show
     CompilationUnitElementX,
     DeferredLoaderGetterElementX,
     ErroneousElementX,
     LibraryElementX,
     PrefixElementX;
-
 import 'native/native.dart' as native;
-
+import 'script.dart';
 import 'tree/tree.dart';
-
 import 'util/util.dart' show
     Link,
     LinkBuilder;

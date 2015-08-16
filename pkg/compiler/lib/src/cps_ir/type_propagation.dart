@@ -4,21 +4,24 @@
 
 import 'optimizers.dart';
 
+import '../compiler.dart' as dart2js show
+    Compiler;
 import '../constants/constant_system.dart';
-import '../resolution/operators.dart';
 import '../constants/values.dart';
 import '../dart_types.dart' as types;
-import '../dart2jslib.dart' as dart2js;
+import '../diagnostics/invariant.dart' as dart2js show
+    InternalErrorFunction;
+import '../elements/elements.dart';
+import '../io/source_information.dart' show SourceInformation;
+import '../js_backend/js_backend.dart' show JavaScriptBackend;
+import '../resolution/operators.dart';
 import '../tree/tree.dart' show DartString, ConsDartString, LiteralDartString;
-import 'cps_ir_nodes.dart';
 import '../types/types.dart';
 import '../types/constants.dart' show computeTypeMask;
-import '../elements/elements.dart';
-import '../dart2jslib.dart' show ClassWorld, World;
 import '../universe/universe.dart';
-import '../js_backend/js_backend.dart' show JavaScriptBackend;
-import '../io/source_information.dart' show SourceInformation;
+import '../world.dart' show World;
 import 'cps_fragment.dart';
+import 'cps_ir_nodes.dart';
 
 enum AbstractBool {
   True, False, Maybe, Nothing
@@ -40,7 +43,7 @@ class TypeMaskSystem {
   TypeMask get listType => inferrer.listType;
   TypeMask get mapType => inferrer.mapType;
   TypeMask get nonNullType => inferrer.nonNullType;
-  TypeMask get mutableNativeListType => backend.mutableArrayType;
+  TypeMask get extendableNativeListType => backend.extendableArrayType;
 
   TypeMask numStringBoolType;
 
@@ -51,8 +54,18 @@ class TypeMaskSystem {
     : inferrer = compiler.typesTask,
       classWorld = compiler.world,
       backend = compiler.backend {
+
+    // Build the number+string+bool type. To make containment tests more
+    // inclusive, we use the num, String, bool types for this, not
+    // the JSNumber, JSString, JSBool subclasses.
+    TypeMask anyNum = 
+        new TypeMask.nonNullSubtype(classWorld.numClass, classWorld);
+    TypeMask anyString =
+        new TypeMask.nonNullSubtype(classWorld.stringClass, classWorld);
+    TypeMask anyBool =
+        new TypeMask.nonNullSubtype(classWorld.boolClass, classWorld);
     numStringBoolType =
-      new TypeMask.unionOf(<TypeMask>[numType, stringType, boolType],
+      new TypeMask.unionOf(<TypeMask>[anyNum, anyString, anyBool],
                            classWorld);
   }
 
@@ -108,22 +121,22 @@ class TypeMaskSystem {
 
   bool isDefinitelyBool(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.containsOnlyBool(classWorld);
+    return t.nonNullable().containsOnlyBool(classWorld);
   }
 
   bool isDefinitelyNum(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.containsOnlyNum(classWorld);
+    return t.nonNullable().containsOnlyNum(classWorld);
   }
 
   bool isDefinitelyString(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.containsOnlyString(classWorld);
+    return t.nonNullable().containsOnlyString(classWorld);
   }
 
   bool isDefinitelyNumStringBool(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return numStringBoolType.containsMask(t, classWorld);
+    return numStringBoolType.containsMask(t.nonNullable(), classWorld);
   }
 
   bool isDefinitelyNotNumStringBool(TypeMask t) {
@@ -151,17 +164,23 @@ class TypeMaskSystem {
 
   bool isDefinitelyNativeList(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.satisfies(backend.jsArrayClass, classWorld);
+    return t.nonNullable().satisfies(backend.jsArrayClass, classWorld);
   }
 
   bool isDefinitelyMutableNativeList(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.satisfies(backend.jsMutableArrayClass, classWorld);
+    return t.nonNullable().satisfies(backend.jsMutableArrayClass, classWorld);
   }
 
   bool isDefinitelyFixedNativeList(TypeMask t, {bool allowNull: false}) {
     if (!allowNull && t.isNullable) return false;
-    return t.satisfies(backend.jsFixedArrayClass, classWorld);
+    return t.nonNullable().satisfies(backend.jsFixedArrayClass, classWorld);
+  }
+
+  bool isDefinitelyExtendableNativeList(TypeMask t, {bool allowNull: false}) {
+    if (!allowNull && t.isNullable) return false;
+    return t.nonNullable().satisfies(backend.jsExtendableArrayClass, 
+        classWorld);
   }
 
   bool areDisjoint(TypeMask leftType, TypeMask rightType) {
@@ -318,6 +337,13 @@ class ConstantPropagationLattice {
                                                allowNull: allowNull);
   }
 
+  bool isDefinitelyExtendableNativeList(AbstractValue value,
+                                        {bool allowNull: false}) {
+    return value.isNothing ||
+        typeSystem.isDefinitelyExtendableNativeList(value.type,
+                                                    allowNull: allowNull);
+  }
+
   /// Returns whether the given [value] is an instance of [type].
   ///
   /// Since [value] and [type] are not always known, [AbstractBool.Maybe] is
@@ -417,6 +443,16 @@ class ConstantPropagationLattice {
       case BinaryOperatorKind.MUL:
         if (isDefinitelyInt(left) && isDefinitelyInt(right)) {
           return nonConstant(typeSystem.intType);
+        }
+        return null;
+
+      case BinaryOperatorKind.EQ:
+        bool behavesLikeIdentity =
+          isDefinitelyNumStringBool(left, allowNull: true) || 
+          right.isNullConstant;
+        if (behavesLikeIdentity && 
+            typeSystem.areDisjoint(left.type, right.type)) {
+          return constant(new FalseConstantValue());
         }
         return null;
 
@@ -604,7 +640,9 @@ class TransformingVisitor extends LeafVisitor {
 
   void visitLetPrim(LetPrim node) {
     AbstractValue value = getValue(node.primitive);
-    if (node.primitive is! Constant && value.isConstant) {
+    if (node.primitive is! Constant &&
+        node.primitive.isSafeForElimination &&
+        value.isConstant) {
       // If the value is a known constant, compile it as a constant.
       Constant newPrim = makeConstantPrimitive(value.constant);
       newPrim.substituteFor(node.primitive);
@@ -696,7 +734,7 @@ class TransformingVisitor extends LeafVisitor {
     context.body = node;
     node.parent = context;
   }
-  
+
   /// Binds [prim] before [node].
   void insertLetPrim(Expression node, Primitive prim) {
     InteriorNode parent = node.parent;
@@ -762,7 +800,8 @@ class TransformingVisitor extends LeafVisitor {
     }
 
     if (condition is ApplyBuiltinOperator &&
-        condition.operator == BuiltinOperator.LooseEq) {
+        (condition.operator == BuiltinOperator.LooseEq ||
+         condition.operator == BuiltinOperator.StrictEq)) {
       Primitive leftArg = condition.arguments[0].definition;
       Primitive rightArg = condition.arguments[1].definition;
       AbstractValue left = getValue(leftArg);
@@ -779,6 +818,20 @@ class TransformingVisitor extends LeafVisitor {
       } else if (left.isNullConstant &&
                  lattice.isDefinitelyNotNumStringBool(right)) {
         Branch branch = new Branch(new IsTrue(rightArg), falseCont, trueCont);
+        replaceSubtree(node, branch);
+        return;
+      } else if (right.isTrueConstant &&
+                 lattice.isDefinitelyBool(left, allowNull: true)) {
+        // Rewrite:
+        //   if (x == true) S1 else S2
+        //     =>
+        //   if (x) S1 else S2  
+        Branch branch = new Branch(new IsTrue(leftArg), trueCont, falseCont);
+        replaceSubtree(node, branch);
+        return;
+      } else if (left.isTrueConstant &&
+                 lattice.isDefinitelyBool(right, allowNull: true)) {
+        Branch branch = new Branch(new IsTrue(rightArg), trueCont, falseCont);
         replaceSubtree(node, branch);
         return;
       }
@@ -812,6 +865,11 @@ class TransformingVisitor extends LeafVisitor {
     }
   }
 
+  /// Returns the possible targets of [selector] when invoked on a receiver
+  /// of type [receiverType].
+  Iterable<Element> getAllTargets(TypeMask receiverType, Selector selector) {
+    return compiler.world.allFunctions.filter(selector, receiverType);
+  }
 
   /************************* CALL EXPRESSIONS *************************/
 
@@ -840,46 +898,61 @@ class TransformingVisitor extends LeafVisitor {
       AbstractValue left = getValue(leftArg);
       AbstractValue right = getValue(rightArg);
 
-      if (node.selector.name == '==') {
+      String opname = node.selector.name;
+      if (opname == '==') {
         // Equality is special due to its treatment of null values and the
         // fact that Dart-null corresponds to both JS-null and JS-undefined.
         // Please see documentation for IsFalsy, StrictEq, and LooseEq.
         if (left.isNullConstant || right.isNullConstant) {
-          return replaceWithBinary(BuiltinOperator.LooseEq, leftArg, rightArg);
+          return replaceWithBinary(BuiltinOperator.Identical, 
+                                   leftArg, rightArg);
         }
-        // Comparison of numbers, strings, and booleans.
-        if (lattice.isDefinitelyNumStringBool(left, allowNull: true) &&
-            lattice.isDefinitelyNumStringBool(right, allowNull: true) &&
-            !(left.isNullable && right.isNullable)) {
-          return replaceWithBinary(BuiltinOperator.StrictEq, leftArg, rightArg);
+        // There are several implementations of == that behave like identical.
+        // Specialize it if we definitely call one of those.
+        bool behavesLikeIdentical = true;
+        for (Element target in getAllTargets(left.type, node.selector)) {
+          ClassElement clazz = target.enclosingClass.declaration;
+          if (clazz != compiler.world.objectClass && 
+              clazz != backend.jsInterceptorClass && 
+              clazz != backend.jsNullClass) {
+            behavesLikeIdentical = false;
+            break;
+          }
         }
-        if (lattice.isDefinitelyNum(left, allowNull: true) &&
-            lattice.isDefinitelyNum(right, allowNull: true)) {
-          return replaceWithBinary(BuiltinOperator.LooseEq, leftArg, rightArg);
-        }
-        if (lattice.isDefinitelyString(left, allowNull: true) &&
-            lattice.isDefinitelyString(right, allowNull: true)) {
-          return replaceWithBinary(BuiltinOperator.LooseEq, leftArg, rightArg);
-        }
-        if (lattice.isDefinitelyBool(left, allowNull: true) &&
-            lattice.isDefinitelyBool(right, allowNull: true)) {
-          return replaceWithBinary(BuiltinOperator.LooseEq, leftArg, rightArg);
+        if (behavesLikeIdentical) {
+          return replaceWithBinary(BuiltinOperator.Identical, 
+                                   leftArg, rightArg);
         }
       } else {
-        // Try to insert a numeric operator.
         if (lattice.isDefinitelyNum(left, allowNull: false) &&
             lattice.isDefinitelyNum(right, allowNull: false)) {
-          BuiltinOperator operator = NumBinaryBuiltins[node.selector.name];
+          // Try to insert a numeric operator.
+          BuiltinOperator operator = NumBinaryBuiltins[opname];
           if (operator != null) {
             return replaceWithBinary(operator, leftArg, rightArg);
           }
-        }
-        else if (lattice.isDefinitelyString(left, allowNull: false) &&
-                 lattice.isDefinitelyString(right, allowNull: false)) {
-          if (node.selector.name == '+') {
-            return replaceWithBinary(BuiltinOperator.StringConcatenate,
+          // Try to insert a shift-left operator.
+          // Shift operators are not in [NumBinaryBuiltins] because Dart shifts
+          // behave different than JS shifts.
+          // We do not introduce shift-right operators yet because the operator
+          // to use depends on whether the left-hand operand is negative.
+          // See js_number.dart in js_runtime for details.
+          PrimitiveConstantValue rightConstant = right.constant;
+          if (opname == '<<' &&
+              lattice.isDefinitelyInt(left) &&
+              rightConstant != null &&
+              rightConstant.isInt &&
+              rightConstant.primitiveValue >= 0 &&
+              rightConstant.primitiveValue <= 31) {
+            return replaceWithBinary(BuiltinOperator.NumShl,
                                      leftArg, rightArg);
           }
+        }
+        if (lattice.isDefinitelyString(left, allowNull: false) &&
+            lattice.isDefinitelyString(right, allowNull: false) &&
+            opname == '+') {
+          return replaceWithBinary(BuiltinOperator.StringConcatenate,
+                                   leftArg, rightArg);
         }
       }
     }
@@ -1023,6 +1096,8 @@ class TransformingVisitor extends LeafVisitor {
         lattice.isDefinitelyFixedNativeList(listValue, allowNull: true);
     bool isMutable =
         lattice.isDefinitelyMutableNativeList(listValue, allowNull: true);
+    bool isExtendable =
+        lattice.isDefinitelyExtendableNativeList(listValue, allowNull: true);
     SourceInformation sourceInfo = node.sourceInformation;
     Continuation cont = node.continuation.definition;
     switch (node.selector.name) {
@@ -1034,7 +1109,73 @@ class TransformingVisitor extends LeafVisitor {
         push(cps.result);
         return true;
 
+      case 'add':
+        if (!node.selector.isCall ||
+            node.selector.positionalArgumentCount != 1 ||
+            node.selector.namedArgumentCount != 0) {
+          return false;
+        }
+        if (!isExtendable) return false;
+        Primitive addedItem = getDartArgument(node, 0);
+        CpsFragment cps = new CpsFragment(sourceInfo);
+        cps.invokeBuiltin(BuiltinMethod.Push, 
+            list, 
+            <Primitive>[addedItem],
+            receiverIsNotNull: listValue.isDefinitelyNotNull);
+        cps.invokeContinuation(cont, [cps.makeNull()]);
+        replaceSubtree(node, cps.result);
+        push(cps.result);
+        return true;
+
+      case 'removeLast':
+        if (!node.selector.isCall ||
+            node.selector.argumentCount != 0) {
+          return false;
+        }
+        if (!isExtendable) return false;
+        CpsFragment cps = new CpsFragment(sourceInfo);
+        Primitive removedItem = cps.invokeBuiltin(BuiltinMethod.Pop,
+            list, 
+            <Primitive>[],
+            receiverIsNotNull: listValue.isDefinitelyNotNull);
+        cps.invokeContinuation(cont, [removedItem]);
+        replaceSubtree(node, cps.result);
+        push(cps.result);
+        return true;
+
+      case 'addAll':
+        if (!node.selector.isCall ||
+            node.selector.argumentCount != 1) {
+          return false;
+        }
+        if (!isExtendable) return false;
+        Primitive addedList = getDartArgument(node, 0);
+        // Rewrite addAll([x1, ..., xN]) to push(x1, ..., xN).
+        // Ensure that the list is not mutated between creation and use.
+        // We aim for the common case where this is the only use of the list, 
+        // which also guarantees that this list is not mutated before use.
+        if (addedList is! LiteralList || !addedList.hasExactlyOneUse) {
+          return false;
+        }
+        LiteralList addedLiteral = addedList;
+        CpsFragment cps = new CpsFragment(sourceInfo);
+        cps.invokeBuiltin(BuiltinMethod.Push, 
+            list, 
+            addedLiteral.values.map((ref) => ref.definition).toList(),
+            receiverIsNotNull: listValue.isDefinitelyNotNull);
+        cps.invokeContinuation(cont, [cps.makeNull()]);
+        replaceSubtree(node, cps.result);
+        push(cps.result);
+        return true;
+
       case '[]':
+      case 'elementAt':
+        if (node.selector.name == 'elementAt' &&
+            (!node.selector.isCall || 
+             node.selector.positionalArgumentCount != 1 ||
+             node.selector.namedArgumentCount != 0)) {
+          return false;
+        }
         if (listValue.isNullable) return false;
         if (hasTooManyIndexAccesses(list)) return false;
         Primitive index = getDartArgument(node, 0);
@@ -1265,8 +1406,6 @@ class TransformingVisitor extends LeafVisitor {
         replaceSubtree(node, invoke);
         push(invoke);
         return true;
-
-      // TODO(asgerf): Rewrite 'add', 'removeLast', ...
 
       default:
         return false;
@@ -1545,19 +1684,71 @@ class TransformingVisitor extends LeafVisitor {
         break;
 
       case BuiltinOperator.Identical:
-        Primitive left = node.arguments[0].definition;
-        Primitive right = node.arguments[1].definition;
-        AbstractValue leftValue = getValue(left);
-        AbstractValue rightValue = getValue(right);
-        // Replace identical(x, true) by x when x is known to be a boolean.
-        if (lattice.isDefinitelyBool(leftValue) &&
-            rightValue.isConstant &&
-            rightValue.constant.isTrue) {
-          left.substituteFor(node);
+        Primitive leftArg = node.arguments[0].definition;
+        Primitive rightArg = node.arguments[1].definition;
+        AbstractValue left = getValue(leftArg);
+        AbstractValue right = getValue(rightArg);
+        if (lattice.isDefinitelyBool(left) &&
+            right.isConstant &&
+            right.constant.isTrue) {
+          // Replace identical(x, true) by x when x is known to be a boolean.
+          // Note that this is not safe if x is null, because the value might
+          // not be used as a condition. A rule for [IsTrue] handles that case.
+          leftArg.substituteFor(node);
+        } else if (lattice.isDefinitelyBool(right) &&
+            left.isConstant &&
+            left.constant.isTrue) {
+          rightArg.substituteFor(node);
+        } else if (left.isNullConstant || right.isNullConstant) {
+          // Use `==` for comparing against null, so JS undefined and JS null
+          // are considered equal.
+          node.operator = BuiltinOperator.LooseEq;
+        } else if (!left.isNullable || !right.isNullable) {
+          // If at most one operand can be Dart null, we can use `===`.
+          // This is not safe when we might compare JS null and JS undefined.
+          node.operator = BuiltinOperator.StrictEq;
+        } else if (lattice.isDefinitelyNum(left, allowNull: true) &&
+                   lattice.isDefinitelyNum(right, allowNull: true)) {
+          // If both operands can be null, but otherwise are of the same type,
+          // we can use `==` for comparison.
+          // This is not safe e.g. for comparing strings against numbers.
+          node.operator = BuiltinOperator.LooseEq;
+        } else if (lattice.isDefinitelyString(left, allowNull: true) &&
+                   lattice.isDefinitelyString(right, allowNull: true)) {
+          node.operator = BuiltinOperator.LooseEq;
+        } else if (lattice.isDefinitelyBool(left, allowNull: true) &&
+                   lattice.isDefinitelyBool(right, allowNull: true)) {
+          node.operator = BuiltinOperator.LooseEq;
         }
         break;
 
       default:
+    }
+  }
+
+  void visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    if (node.method == BuiltinMethod.Push) {
+      // Convert consecutive pushes into a single push.
+      InteriorNode parent = getEffectiveParent(node.parent);
+      if (parent is LetPrim && parent.primitive is ApplyBuiltinMethod) {
+        ApplyBuiltinMethod previous = parent.primitive;
+        if (previous.method == BuiltinMethod.Push && 
+            previous.receiver.definition == node.receiver.definition) {
+          // We found two consecutive pushes. 
+          // Move all arguments from the first push onto the second one.
+          List<Reference<Primitive>> arguments = previous.arguments;
+          for (Reference ref in arguments) {
+            ref.parent = node;
+          }
+          arguments.addAll(node.arguments);
+          node.arguments = arguments;
+          // Elimnate the old push.
+          previous.receiver.unlink();
+          assert(previous.hasNoUses);
+          parent.parent.body = parent.body;
+          parent.body.parent = parent.parent;
+        }
+      }
     }
   }
 
@@ -1909,6 +2100,8 @@ class TypePropagationVisitor implements Visitor {
         break;
 
       case BuiltinOperator.Identical:
+      case BuiltinOperator.StrictEq:
+      case BuiltinOperator.LooseEq:
         AbstractValue leftConst = getValue(node.arguments[0].definition);
         AbstractValue rightConst = getValue(node.arguments[1].definition);
         ConstantValue leftValue = leftConst.constant;
@@ -1945,6 +2138,7 @@ class TypePropagationVisitor implements Visitor {
       case BuiltinOperator.NumAnd:
       case BuiltinOperator.NumOr:
       case BuiltinOperator.NumXor:
+      case BuiltinOperator.NumShl:
         AbstractValue left = getValue(node.arguments[0].definition);
         AbstractValue right = getValue(node.arguments[1].definition);
         if (lattice.isDefinitelyInt(left) && lattice.isDefinitelyInt(right)) {
@@ -1958,9 +2152,7 @@ class TypePropagationVisitor implements Visitor {
       case BuiltinOperator.NumLe:
       case BuiltinOperator.NumGt:
       case BuiltinOperator.NumGe:
-      case BuiltinOperator.StrictEq:
       case BuiltinOperator.StrictNeq:
-      case BuiltinOperator.LooseEq:
       case BuiltinOperator.LooseNeq:
       case BuiltinOperator.IsFalsy:
       case BuiltinOperator.IsNumber:
@@ -1970,6 +2162,11 @@ class TypePropagationVisitor implements Visitor {
         setValue(node, nonConstant(typeSystem.boolType));
         break;
     }
+  }
+
+  void visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    // TODO(asgerf): For pop(), use the container type from the TypeMask.
+    setValue(node, nonConstant());
   }
 
   void visitInvokeMethodDirectly(InvokeMethodDirectly node) {
@@ -2074,7 +2271,7 @@ class TypePropagationVisitor implements Visitor {
   void visitLiteralList(LiteralList node) {
     // Constant lists are translated into (Constant ListConstant(...)) IR nodes,
     // and thus LiteralList nodes are NonConst.
-    setValue(node, nonConstant(typeSystem.mutableNativeListType));
+    setValue(node, nonConstant(typeSystem.extendableNativeListType));
   }
 
   void visitLiteralMap(LiteralMap node) {
@@ -2239,6 +2436,12 @@ class TypePropagationVisitor implements Visitor {
   void visitSetIndex(SetIndex node) {
     setValue(node, nonConstant());
   }
+
+  @override
+  visitAwait(Await node) {
+    Continuation continuation = node.continuation.definition;
+    setReachable(continuation);
+  }
 }
 
 /// Represents the abstract value of a primitive value at some point in the
@@ -2285,6 +2488,7 @@ class AbstractValue {
   bool get isConstant => (kind == CONSTANT);
   bool get isNonConst => (kind == NONCONST);
   bool get isNullConstant => kind == CONSTANT && constant.isNull;
+  bool get isTrueConstant => kind == CONSTANT && constant.isTrue;
 
   bool get isNullable => kind != NOTHING && type.isNullable;
   bool get isDefinitelyNotNull => kind == NOTHING || !type.isNullable;

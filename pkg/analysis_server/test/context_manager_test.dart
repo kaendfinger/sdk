@@ -344,6 +344,45 @@ analyzer:
     expect(contexts[1].name, equals('/my/proj/lib'));
   }
 
+  // TODO(paulberry): This test only tests PackagesFileDisposition.
+  // Once http://dartbug.com/23909 is fixed, add a test for sdk extensions
+  // and PackageMapDisposition.
+  test_sdk_ext_packagespec() async {
+    // Create files.
+    String libPath = newFolder([projPath, LIB_NAME]);
+    newFile([libPath, 'main.dart']);
+    newFile([libPath, 'nope.dart']);
+    String sdkExtPath = newFolder([projPath, 'sdk_ext']);
+    newFile([sdkExtPath, 'entry.dart']);
+    String sdkExtSrcPath = newFolder([projPath, 'sdk_ext', 'src']);
+    newFile([sdkExtSrcPath, 'part.dart']);
+    // Setup sdk extension mapping.
+    newFile(
+        [libPath, '_sdkext'],
+        r'''
+{
+  "dart:foobar": "../sdk_ext/entry.dart"
+}
+''');
+    // Setup .packages file
+    newFile(
+      [projPath, '.packages'],
+      r'''
+test_pack:lib/
+''');
+    // Setup context.
+    manager.setRoots(<String>[projPath], <String>[], <String, String>{});
+    // Confirm that one context was created.
+    var contexts =
+        manager.contextsInAnalysisRoot(resourceProvider.newFolder(projPath));
+    expect(contexts, isNotNull);
+    expect(contexts.length, equals(1));
+    var context = contexts[0];
+    var source = context.sourceFactory.forUri('dart:foobar');
+    expect(source.fullName, equals('/my/proj/sdk_ext/entry.dart'));
+  }
+
+
   test_refresh_folder_with_packagespec() {
     // create a context with a .packages file
     String packagespecFile = posix.join(projPath, '.packages');
@@ -578,6 +617,20 @@ analyzer:
     expect(resolvedSource, isNotNull);
     expect(resolvedSource.fullName,
         equals('/home/somebody/.pub/cache/unittest-0.9.9/lib/unittest.dart'));
+  }
+
+  void test_setRoots_addFolderWithPackagespecAndPackageRoot() {
+    // The package root should take priority.
+    String packagespecPath = posix.join(projPath, '.packages');
+    resourceProvider.newFile(packagespecPath,
+        'unittest:file:///home/somebody/.pub/cache/unittest-0.9.9/lib/');
+    String packageRootPath = '/package/root/';
+    manager.setRoots(<String>[projPath], <String>[],
+        <String, String>{projPath: packageRootPath});
+    expect(callbacks.currentContextPaths, hasLength(1));
+    expect(callbacks.currentContextPaths, contains(projPath));
+    expect(callbacks.currentContextDispositions[projPath].packageRoot,
+        packageRootPath);
   }
 
   void test_setRoots_addFolderWithPubspec() {
@@ -1329,7 +1382,17 @@ analyzer:
   }
 
   test_watch_deletePackagespec_fromSubFolder_withPubspec() {
-    // prepare paths
+    // prepare paths:
+    //
+    // root
+    //   root.dart
+    //   sub
+    //     aaa
+    //       .packages
+    //       pubspec.yaml
+    //       bin
+    //         a.dart
+    //
     String root = '/root';
     String rootFile = '$root/root.dart';
     String subProject = '$root/sub/aaa';

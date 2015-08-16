@@ -781,8 +781,8 @@ void NativeCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   } else {
     __ leaq(RAX, Address(RBP, kFirstLocalSlotFromFp * kWordSize));
   }
-  __ LoadImmediate(
-      RBX, Immediate(reinterpret_cast<uword>(native_c_function())));
+  ExternalLabel label(reinterpret_cast<uword>(native_c_function()));
+  __ LoadExternalLabel(RBX, &label, kNotPatchable);
   __ LoadImmediate(R10, Immediate(argc_tag));
   const StubEntry& stub_entry = (is_bootstrap_native() || is_leaf_call) ?
       *StubCode::CallBootstrapCFunction_entry() :
@@ -822,8 +822,9 @@ void StringFromCharCodeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   ASSERT(compiler->is_optimizing());
   Register char_code = locs()->in(0).reg();
   Register result = locs()->out(0).reg();
-  __ LoadImmediate(result,
-      Immediate(reinterpret_cast<uword>(Symbols::PredefinedAddress())));
+
+  ExternalLabel label(reinterpret_cast<uword>(Symbols::PredefinedAddress()));
+  __ LoadExternalLabel(result, &label, kNotPatchable);
   __ movq(result, Address(result,
                           char_code,
                           TIMES_HALF_WORD_SIZE,  // Char code is a smi.
@@ -2127,6 +2128,9 @@ void CreateArrayInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 
   __ Bind(&slow_path);
+  const Code& stub = Code::Handle(compiler->isolate(),
+                                  StubCode::AllocateArray_entry()->code());
+  compiler->AddStubCallTarget(stub);
   compiler->GenerateCall(token_pos(),
                          *StubCode::AllocateArray_entry(),
                          RawPcDescriptors::kOther,
@@ -2397,6 +2401,9 @@ class AllocateContextSlowPath : public SlowPathCode {
     compiler->SaveLiveRegisters(locs);
 
     __ LoadImmediate(R10, Immediate(instruction_->num_context_variables()));
+    const Code& stub = Code::Handle(compiler->isolate(),
+                                    StubCode::AllocateContext_entry()->code());
+    compiler->AddStubCallTarget(stub);
     compiler->GenerateCall(instruction_->token_pos(),
                            *StubCode::AllocateContext_entry(),
                            RawPcDescriptors::kOther,

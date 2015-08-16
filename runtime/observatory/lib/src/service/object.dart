@@ -1114,11 +1114,15 @@ class Isolate extends ServiceObjectOwner with Coverage {
     });
   }
 
-  Future<ServiceObject> getObject(String objectId) {
+  Future<ServiceObject> getObject(String objectId, {bool reload: true}) {
     assert(objectId != null && objectId != '');
     var obj = _cache[objectId];
     if (obj != null) {
-      return obj.reload();
+      if (reload) {
+        return obj.reload();
+      }
+      // Returned cached object.
+      return new Future.value(obj);
     }
     Map params = {
       'objectId': objectId,
@@ -1951,6 +1955,13 @@ class Library extends ServiceObject with Coverage {
     return isolate._eval(this, expression);
   }
 
+  Script get rootScript {
+    for (Script script in scripts) {
+      if (script.uri == uri) return script;
+    }
+    return null;
+  }
+
   String toString() => "Library($uri)";
 }
 
@@ -2144,6 +2155,8 @@ class Instance extends ServiceObject {
   @observable Function twoByteFunction;  // If a RegExp.
   @observable Function externalOneByteFunction;  // If a RegExp.
   @observable Function externalTwoByteFunction;  // If a RegExp.
+  @observable bool isCaseSensitive;  // If a RegExp.
+  @observable bool isMultiLine;  // If a RegExp.
 
   bool get isAbstractType {
     return (kind == 'Type' || kind == 'TypeRef' ||
@@ -2204,6 +2217,8 @@ class Instance extends ServiceObject {
 
     size = map['size'];
 
+    isCaseSensitive = map['isCaseSensitive'];
+    isMultiLine = map['isMultiLine'];
     oneByteFunction = map['_oneByteFunction'];
     twoByteFunction = map['_twoByteFunction'];
     externalOneByteFunction = map['_externalOneByteFunction'];
@@ -2379,6 +2394,7 @@ class ServiceFunction extends ServiceObject with Coverage {
   @observable ProfileFunction profile;
   @observable Instance icDataArray;
 
+  bool get canCache => true;
   bool get immutable => false;
 
   ServiceFunction._empty(ServiceObject owner) : super._empty(owner);
@@ -3149,8 +3165,16 @@ class CodeInstruction extends Observable {
     if (address == 0) {
       return;
     }
-
-    jumpTarget = instructionsByAddressOffset[address - startAddress];
+    var relativeAddress = address - startAddress;
+    if (relativeAddress < 0) {
+      Logger.root.warning('Bad address resolving jump target $relativeAddress');
+      return;
+    }
+    if (relativeAddress >= instructionsByAddressOffset.length) {
+      Logger.root.warning('Bad address resolving jump target $relativeAddress');
+      return;
+    }
+    jumpTarget = instructionsByAddressOffset[relativeAddress];
   }
 }
 
@@ -3350,7 +3374,7 @@ class Code extends HeapObject {
       var pcOffset = 0;
       if (disassembly[i] != '') {
         // Not a code comment, extract address.
-        address = int.parse(disassembly[i]);
+        address = int.parse(disassembly[i], radix:16);
         pcOffset = address - startAddress;
       }
       var instruction = new CodeInstruction(address, pcOffset, machine, human);

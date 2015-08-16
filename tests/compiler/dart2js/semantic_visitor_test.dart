@@ -10,13 +10,17 @@ import 'package:async_helper/async_helper.dart';
 import 'package:expect/expect.dart';
 import 'package:compiler/src/constants/expressions.dart';
 import 'package:compiler/src/dart_types.dart';
-import 'package:compiler/src/dart2jslib.dart';
+import 'package:compiler/src/diagnostics/spannable.dart';
+import 'package:compiler/src/diagnostics/messages.dart' show MessageKind;
+import 'package:compiler/src/compiler.dart';
 import 'package:compiler/src/elements/elements.dart';
 import 'package:compiler/src/resolution/resolution.dart';
 import 'package:compiler/src/resolution/semantic_visitor.dart';
 import 'package:compiler/src/resolution/operators.dart';
 import 'package:compiler/src/tree/tree.dart';
-import 'package:compiler/src/util/util.dart';
+import 'package:compiler/src/universe/universe.dart' show
+    CallStructure,
+    Selector;
 import 'memory_compiler.dart';
 
 part 'semantic_visitor_test_send_data.dart';
@@ -195,7 +199,6 @@ const List<VisitKind> UNTESTABLE_KINDS = const <VisitKind>[
   // handled the compile constant evaluator.
   VisitKind.VISIT_CLASS_TYPE_LITERAL_SET,
   VisitKind.VISIT_TYPEDEF_TYPE_LITERAL_SET,
-  VisitKind.VISIT_DYNAMIC_TYPE_LITERAL_SET,
   // Invalid assignments is currently report through an erroneous element.
   VisitKind.VISIT_TYPE_VARIABLE_TYPE_LITERAL_SET,
   VisitKind.VISIT_FINAL_PARAMETER_SET,

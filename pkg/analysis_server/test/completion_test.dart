@@ -2619,9 +2619,9 @@ class Q {
           "1+while",
           "2+do",
           "3+while",
-          "4+for (!)",
+          "4+for",
           "5+in",
-          "6+for (!)",
+          "6+for",
           "7+switch",
           "8+case",
           "9+default",
@@ -2637,7 +2637,7 @@ class Q {
           "K+else",
           "L+return"
         ],
-        failingTests: '35BCHK');
+        failingTests: '3BCHK');
 
     // operators in function
     buildTests('test015', '''f(a,b,c) => a + b * c !1;''', <String>["1+=="],
@@ -2659,7 +2659,7 @@ class Q {
 !4part 'x';''',
         <String>[
           "1+library",
-          "2+import '!';",
+          "2+import",
           "3+export",
           "4+part",
           "5+as",

@@ -448,10 +448,17 @@ class SampleBufferControlElement extends ObservatoryElement {
     }
     await _changeState(kFetchingState);
     try {
-      var params = { 'tags': tagSelector };
-      var response = await isolate.invokeRpc('_getCpuProfile', params);
+      var response;
+      if (allocationProfileClass != null) {
+        response =
+            await allocationProfileClass.getAllocationSamples(tagSelector);
+      } else {
+        var params = { 'tags': tagSelector };
+        response = await isolate.invokeRpc('_getCpuProfile', params);
+      }
       await _changeState(kLoadingState);
       profile.load(isolate, response);
+      profile.buildFunctionCallerAndCallees();
       _update(profile);
       await _changeState(kLoadedState);
       // Notify listener.
@@ -494,7 +501,11 @@ class SampleBufferControlElement extends ObservatoryElement {
     refreshTime = new DateTime.now().toString();
     stackDepth = profile.stackDepth.toString();
     sampleRate = profile.sampleRate.toStringAsFixed(0);
-    timeSpan = formatTime(profile.timeSpan);
+    if (profile.sampleCount == 0) {
+      timeSpan = '0s';
+    } else {
+      timeSpan = formatTime(profile.timeSpan);
+    }
   }
 
   void tagSelectorChanged(oldValue) {
@@ -512,7 +523,7 @@ class SampleBufferControlElement extends ObservatoryElement {
   @observable String fetchTime = '';
   @observable String loadTime = '';
   @observable String tagSelector = 'UserVM';
-  @observable String state = 'kFetching';
+  @observable String state = kFetchingState;
   @observable var exception;
   @observable var stackTrace;
 
@@ -521,8 +532,10 @@ class SampleBufferControlElement extends ObservatoryElement {
   static const kFetchingState = 'kFetching';
   static const kLoadedState = 'kLoaded';
   static const kLoadingState = 'kLoading';
+  static const kNotLoadedState = 'kNotLoaded';
 
   Isolate isolate;
+  Class allocationProfileClass;
 
   final CpuProfile profile = new CpuProfile();
   final Stopwatch _stopWatch = new Stopwatch();
@@ -547,6 +560,7 @@ class StackTraceTreeConfigElement extends ObservatoryElement {
   }
 
   Function onTreeConfigChange;
+  @observable bool show = true;
   @observable bool showModeSelector = true;
   @observable bool showDirectionSelector = true;
   @observable String modeSelector = 'Function';
@@ -855,15 +869,22 @@ class CpuProfileTableElement extends ObservatoryElement {
   }
 
   checkParameters() {
-    var functionId = app.locationManager.uri.queryParameters['functionId'];
-    if (functionId == null) {
-      _focusOnFunction(null);
-      return;
-    }
     if (isolate == null) {
       return;
     }
-    isolate.getObject(functionId).then((func) => _focusOnFunction(func));
+    var functionId = app.locationManager.uri.queryParameters['functionId'];
+    var functionName =
+        app.locationManager.uri.queryParameters['functionName'];
+    if (functionId == '') {
+      // Fallback to searching by name.
+      _focusOnFunction(_findFunction(functionName));
+    } else {
+      if (functionId == null) {
+        _focusOnFunction(null);
+        return;
+      }
+      isolate.getObject(functionId).then((func) => _focusOnFunction(func));
+    }
   }
 
   _clearView() {
@@ -899,6 +920,8 @@ class CpuProfileTableElement extends ObservatoryElement {
     tableBody.children[row].offsetHeight;
     tableBody.children[row].scrollIntoView(ScrollAlignment.CENTER);
     tableBody.children[row].classes.add('shake');
+    // Focus on clicked function.
+    _focusOnFunction(function);
   }
 
   _clearFocusedFunction() {
@@ -909,6 +932,15 @@ class CpuProfileTableElement extends ObservatoryElement {
     }
     focusedRow = null;
     focusedFunction = null;
+  }
+
+  ServiceFunction _findFunction(String functionName) {
+    for (var func in profile.functions) {
+      if (func.function.name == functionName) {
+        return func.function;
+      }
+    }
+    return null;
   }
 
   _focusOnFunction(ServiceFunction function) {
@@ -948,7 +980,8 @@ class CpuProfileTableElement extends ObservatoryElement {
     var function = row.values[NameSortedTable.FUNCTION_COLUMN];
     app.locationManager.goReplacingParameters(
         {
-          'functionId': function.id
+          'functionId': function.id,
+          'functionName': function.vmName
         }
     );
   }
@@ -1113,11 +1146,18 @@ class CpuProfileTreeElement extends ObservatoryElement {
   TableTree codeTree;
   TableTree functionTree;
   FunctionCallTreeNodeFilter functionFilter;
+  @observable bool show = true;
 
   CpuProfileTreeElement.created() : super.created();
 
   void render() {
     _updateView();
+  }
+
+  showChanged(oldValue) {
+    var treeTable = shadowRoot.querySelector('#treeTable');
+    assert(treeTable != null);
+    treeTable.style.display = show ? 'table' : 'none';
   }
 
   void _updateView() {

@@ -387,13 +387,6 @@ static void PushArgumentsArray(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t, DeoptimizeCopyFrame,
-                           intptr_t deopt_reason,
-                           uword saved_registers_address);
-
-DECLARE_LEAF_RUNTIME_ENTRY(void, DeoptimizeFillFrame, uword last_fp);
-
-
 // Used by eager and lazy deoptimization. Preserve result in R0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -857,6 +850,8 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
     ASSERT(kSmiTagShift == 1);
     __ bic(R2, R2, Operand(kObjectAlignment - 1));
 
+    __ MaybeTraceAllocation(kContextCid, R4, &slow_case,
+                            /* inline_isolate = */ false);
     // Now allocate the object.
     // R1: number of context variables.
     // R2: object size.
@@ -962,8 +957,6 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(void, StoreBufferBlockProcess, Isolate* isolate);
-
 // Helper stub to implement Assembler::StoreIntoObject.
 // Input parameters:
 //   R0: address (i.e. object) being stored into.
@@ -1057,8 +1050,9 @@ void StubCode::GenerateAllocationStubForClass(
   const int kInlineInstanceSize = 12;
   const intptr_t instance_size = cls.instance_size();
   ASSERT(instance_size > 0);
+  Isolate* isolate = Isolate::Current();
   if (FLAG_inline_alloc && Heap::IsAllocatableInNewSpace(instance_size) &&
-      !cls.trace_allocation()) {
+      !cls.TraceAllocation(isolate)) {
     Label slow_case;
     // Allocate the object and update top to point to
     // next object start and initialize the allocated object.
@@ -1918,12 +1912,6 @@ void StubCode::GenerateOptimizeFunctionStub(Assembler* assembler) {
   __ bx(R0);
   __ bkpt(0);
 }
-
-
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t,
-                           BigintCompare,
-                           RawBigint* left,
-                           RawBigint* right);
 
 
 // Does identical check (object references are equal or not equal) with special

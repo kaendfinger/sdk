@@ -19,6 +19,7 @@ import 'package:analyzer/source/package_map_provider.dart';
 import 'package:analyzer/source/package_map_resolver.dart';
 import 'package:analyzer/source/path_filter.dart';
 import 'package:analyzer/source/pub_package_map_provider.dart';
+import 'package:analyzer/source/sdk_ext.dart';
 import 'package:analyzer/src/generated/engine.dart';
 import 'package:analyzer/src/generated/java_io.dart';
 import 'package:analyzer/src/generated/source.dart';
@@ -730,7 +731,7 @@ class ContextManagerImpl implements ContextManager {
    * dependencies (currently we only use it to track "pub list" dependencies).
    */
   FolderDisposition _computeFolderDisposition(
-      Folder folder, void addDependency(String path)) {
+      Folder folder, void addDependency(String path), File packagespecFile) {
     String packageRoot = normalizedPackageRoots[folder.path];
     if (packageRoot != null) {
       // TODO(paulberry): We shouldn't be using JavaFile here because it
@@ -763,18 +764,28 @@ class ContextManagerImpl implements ContextManager {
       // resolve packages.
       return new NoPackageFolderDisposition(packageRoot: packageRoot);
     } else {
-      callbacks.beginComputePackageMap();
-      if (packageResolverProvider != null) {
-        UriResolver resolver = packageResolverProvider(folder);
-        if (resolver != null) {
-          return new CustomPackageResolverDisposition(resolver);
-        }
-      }
       PackageMapInfo packageMapInfo;
-      ServerPerformanceStatistics.pub.makeCurrentWhile(() {
-        packageMapInfo = _packageMapProvider.computePackageMap(folder);
-      });
-      callbacks.endComputePackageMap();
+      callbacks.beginComputePackageMap();
+      try {
+        if (ENABLE_PACKAGESPEC_SUPPORT) {
+          // Try .packages first.
+          if (pathContext.basename(packagespecFile.path) == PACKAGE_SPEC_NAME) {
+            Packages packages = _readPackagespec(packagespecFile);
+            return new PackagesFileDisposition(packages);
+          }
+        }
+        if (packageResolverProvider != null) {
+          UriResolver resolver = packageResolverProvider(folder);
+          if (resolver != null) {
+            return new CustomPackageResolverDisposition(resolver);
+          }
+        }
+        ServerPerformanceStatistics.pub.makeCurrentWhile(() {
+          packageMapInfo = _packageMapProvider.computePackageMap(folder);
+        });
+      } finally {
+        callbacks.endComputePackageMap();
+      }
       for (String dependencyPath in packageMapInfo.dependencies) {
         addDependency(dependencyPath);
       }
@@ -798,17 +809,10 @@ class ContextManagerImpl implements ContextManager {
     FolderDisposition disposition;
     List<String> dependencies = <String>[];
 
-    if (ENABLE_PACKAGESPEC_SUPPORT) {
-      // Try .packages first.
-      if (pathos.basename(packagespecFile.path) == PACKAGE_SPEC_NAME) {
-        Packages packages = _readPackagespec(packagespecFile);
-        disposition = new PackagesFileDisposition(packages);
-      }
-    }
-
     // Next resort to a package uri resolver.
     if (disposition == null) {
-      disposition = _computeFolderDisposition(folder, dependencies.add);
+      disposition =
+          _computeFolderDisposition(folder, dependencies.add, packagespecFile);
     }
 
     info.setDependencies(dependencies);
@@ -833,18 +837,7 @@ class ContextManagerImpl implements ContextManager {
       ContextInfo parent, Folder folder, bool withPackageSpecOnly) {
     // Decide whether a context needs to be created for [folder] here, and if
     // so, create it.
-    File packageSpec;
-
-    if (ENABLE_PACKAGESPEC_SUPPORT) {
-      // Start by looking for .packages.
-      packageSpec = folder.getChild(PACKAGE_SPEC_NAME);
-    }
-
-    // Fall back to looking for a pubspec.
-    if (packageSpec == null || !packageSpec.exists) {
-      packageSpec = folder.getChild(PUBSPEC_NAME);
-    }
-
+    File packageSpec = _findPackageSpecFile(folder);
     bool createContext = packageSpec.exists || !withPackageSpecOnly;
     if (withPackageSpecOnly &&
         packageSpec.exists &&
@@ -929,6 +922,28 @@ class ContextManagerImpl implements ContextManager {
   }
 
   /**
+   * Find the file that should be used to determine whether a context needs to
+   * be created here--this is either the ".packages" file or the "pubspec.yaml"
+   * file.
+   */
+  File _findPackageSpecFile(Folder folder) {
+    // Decide whether a context needs to be created for [folder] here, and if
+    // so, create it.
+    File packageSpec;
+
+    if (ENABLE_PACKAGESPEC_SUPPORT) {
+      // Start by looking for .packages.
+      packageSpec = folder.getChild(PACKAGE_SPEC_NAME);
+    }
+
+    // Fall back to looking for a pubspec.
+    if (packageSpec == null || !packageSpec.exists) {
+      packageSpec = folder.getChild(PUBSPEC_NAME);
+    }
+    return packageSpec;
+  }
+
+  /**
    * Return the [ContextInfo] for the "innermost" context whose associated
    * folder is or contains the given path.  ("innermost" refers to the nesting
    * of contexts, so if there is a context for path /foo and a context for
@@ -1004,7 +1019,7 @@ class ContextManagerImpl implements ContextManager {
               if (_isPubspec(path)) {
                 // Check for a sibling .packages file.
                 if (!resourceProvider
-                    .getFile(pathos.join(directoryPath, PACKAGE_SPEC_NAME))
+                    .getFile(pathContext.join(directoryPath, PACKAGE_SPEC_NAME))
                     .exists) {
                   _extractContext(info, resource);
                   return;
@@ -1013,7 +1028,7 @@ class ContextManagerImpl implements ContextManager {
               if (_isPackagespec(path)) {
                 // Check for a sibling pubspec.yaml file.
                 if (!resourceProvider
-                    .getFile(pathos.join(directoryPath, PUBSPEC_NAME))
+                    .getFile(pathContext.join(directoryPath, PUBSPEC_NAME))
                     .exists) {
                   _extractContext(info, resource);
                   return;
@@ -1059,7 +1074,7 @@ class ContextManagerImpl implements ContextManager {
               if (_isPubspec(path)) {
                 // Check for a sibling .packages file.
                 if (!resourceProvider
-                    .getFile(pathos.join(directoryPath, PACKAGE_SPEC_NAME))
+                    .getFile(pathContext.join(directoryPath, PACKAGE_SPEC_NAME))
                     .exists) {
                   _mergeContext(info);
                   return;
@@ -1068,7 +1083,7 @@ class ContextManagerImpl implements ContextManager {
               if (_isPackagespec(path)) {
                 // Check for a sibling pubspec.yaml file.
                 if (!resourceProvider
-                    .getFile(pathos.join(directoryPath, PUBSPEC_NAME))
+                    .getFile(pathContext.join(directoryPath, PUBSPEC_NAME))
                     .exists) {
                   _mergeContext(info);
                   return;
@@ -1182,8 +1197,8 @@ class ContextManagerImpl implements ContextManager {
     // while we're rerunning "pub list", since any analysis we complete while
     // "pub list" is in progress is just going to get thrown away anyhow.
     List<String> dependencies = <String>[];
-    FolderDisposition disposition =
-        _computeFolderDisposition(info.folder, dependencies.add);
+    FolderDisposition disposition = _computeFolderDisposition(
+        info.folder, dependencies.add, _findPackageSpecFile(info.folder));
     info.setDependencies(dependencies);
     callbacks.updateContextPackageUriResolver(info.folder, disposition);
   }
@@ -1338,7 +1353,8 @@ class PackageMapDisposition extends FolderDisposition {
   @override
   Iterable<UriResolver> createPackageUriResolvers(
           ResourceProvider resourceProvider) =>
-      <UriResolver>[new PackageMapUriResolver(resourceProvider, packageMap)];
+      <UriResolver>[new SdkExtUriResolver(packageMap),
+                    new PackageMapUriResolver(resourceProvider, packageMap)];
 }
 
 /**
@@ -1356,6 +1372,19 @@ class PackagesFileDisposition extends FolderDisposition {
 
   @override
   Iterable<UriResolver> createPackageUriResolvers(
-          ResourceProvider resourceProvider) =>
-      const <UriResolver>[];
+          ResourceProvider resourceProvider) {
+    if (packages != null) {
+      // Construct package map for the SdkExtUriResolver.
+      Map<String, List<Folder>> packageMap = <String, List<Folder>>{};
+      packages.asMap().forEach((String name, Uri uri) {
+        if (uri.scheme == 'file' || uri.scheme == '' /* unspecified */) {
+          var path = resourceProvider.pathContext.fromUri(uri);
+          packageMap[name] = <Folder>[resourceProvider.getFolder(path)];
+        }
+      });
+      return <UriResolver>[new SdkExtUriResolver(packageMap)];
+    } else {
+      return const <UriResolver>[];
+    }
+  }
 }

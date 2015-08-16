@@ -445,10 +445,10 @@ void Parser::SetPosition(intptr_t position) {
 
 void Parser::ParseCompilationUnit(const Library& library,
                                   const Script& script) {
-  Isolate* isolate = Isolate::Current();
-  ASSERT(isolate->long_jump_base()->IsSafeToJump());
-  CSTAT_TIMER_SCOPE(isolate, parser_timer);
-  VMTagScope tagScope(isolate, VMTag::kCompileTopLevelTagId);
+  Thread* thread = Thread::Current();
+  ASSERT(thread->isolate()->long_jump_base()->IsSafeToJump());
+  CSTAT_TIMER_SCOPE(thread->isolate(), parser_timer);
+  VMTagScope tagScope(thread, VMTag::kCompileTopLevelTagId);
   Parser parser(script, library, 0);
   parser.ParseTopLevel();
 }
@@ -795,7 +795,7 @@ RawObject* Parser::ParseFunctionParameters(const Function& func) {
   ASSERT(!func.IsNull());
   Thread* thread = Thread::Current();
   Isolate* isolate = thread->isolate();
-  StackZone stack_zone(isolate);
+  StackZone stack_zone(thread);
   Zone* zone = stack_zone.GetZone();
   LongJumpScope jump;
   if (setjmp(*jump.Set()) == 0) {
@@ -872,11 +872,13 @@ bool Parser::ParseFormalParameters(const Function& func, ParamList* params) {
 
 
 void Parser::ParseFunction(ParsedFunction* parsed_function) {
-  Isolate* isolate = parsed_function->isolate();
-  Zone* zone = parsed_function->zone();
+  Thread* thread = parsed_function->thread();
+  ASSERT(thread == Thread::Current());
+  Isolate* isolate = thread->isolate();
+  Zone* zone = thread->zone();
   CSTAT_TIMER_SCOPE(isolate, parser_timer);
   INC_STAT(isolate, num_functions_compiled, 1);
-  VMTagScope tagScope(isolate, VMTag::kCompileParseFunctionTagId,
+  VMTagScope tagScope(thread, VMTag::kCompileParseFunctionTagId,
                       FLAG_profile_vm);
 
   ASSERT(isolate->long_jump_base()->IsSafeToJump());
@@ -976,7 +978,7 @@ void Parser::ParseFunction(ParsedFunction* parsed_function) {
 RawObject* Parser::ParseMetadata(const Class& cls, intptr_t token_pos) {
   Thread* thread = Thread::Current();
   Isolate* isolate = thread->isolate();
-  StackZone stack_zone(isolate);
+  StackZone stack_zone(thread);
   Zone* zone = stack_zone.GetZone();
   LongJumpScope jump;
   if (setjmp(*jump.Set()) == 0) {
@@ -1164,7 +1166,7 @@ RawObject* Parser::ParseFunctionFromSource(const Class& owning_class,
                                            const String& source) {
   Thread* thread = Thread::Current();
   Isolate* isolate = thread->isolate();
-  StackZone stack_zone(isolate);
+  StackZone stack_zone(thread);
   LongJumpScope jump;
   if (setjmp(*jump.Set()) == 0) {
     const String& uri = String::Handle(Symbols::New("dynamically-added"));
@@ -3972,7 +3974,8 @@ void Parser::ParseFieldDefinition(ClassDesc* members, MemberDesc* field) {
       // value is not assignable (assuming checked mode and disregarding actual
       // mode), the field value is reset and a kImplicitStaticFinalGetter is
       // created at finalization time.
-      if (LookaheadToken(1) == Token::kSEMICOLON) {
+      if ((LookaheadToken(1) == Token::kSEMICOLON) ||
+          (LookaheadToken(1) == Token::kCOMMA)) {
         has_simple_literal = IsSimpleLiteral(*field->type, &init_value);
       }
       SkipExpr();
@@ -3988,11 +3991,13 @@ void Parser::ParseFieldDefinition(ClassDesc* members, MemberDesc* field) {
     }
 
     // Create the field object.
+    const bool is_reflectable =
+        !(library_.is_dart_scheme() && library_.IsPrivate(*field->name));
     class_field = Field::New(*field->name,
                              field->has_static,
                              field->has_final,
                              field->has_const,
-                             false,  // Not synthetic.
+                             is_reflectable,
                              current_class(),
                              field->name_pos);
     class_field.set_type(*field->type);
@@ -4008,6 +4013,9 @@ void Parser::ParseFieldDefinition(ClassDesc* members, MemberDesc* field) {
     // and rules out many fields from being unnecessary unboxing candidates.
     if (!field->has_static && has_initializer && has_simple_literal) {
       class_field.RecordStore(init_value);
+      if (!init_value.IsNull() && init_value.IsDouble()) {
+        class_field.set_is_double_initialized(true);
+      }
     }
 
     // For static final fields (this includes static const fields), set value to
@@ -4671,7 +4679,7 @@ void Parser::ParseEnumDefinition(const Class& cls) {
                            false,  // Not static.
                            true,  // Field is final.
                            false,  // Not const.
-                           false,  // Not synthetic.
+                           true,  // Is reflectable.
                            cls,
                            cls.token_pos());
   index_field.set_type(int_type);
@@ -4743,7 +4751,7 @@ void Parser::ParseEnumDefinition(const Class& cls) {
                             /* is_static = */ true,
                             /* is_final = */ true,
                             /* is_const = */ true,
-                            /* is_synthetic = */ false,
+                            /* is_reflectable = */ true,
                             cls,
                             cls.token_pos());
     enum_value.set_type(dynamic_type);
@@ -4781,7 +4789,7 @@ void Parser::ParseEnumDefinition(const Class& cls) {
                             /* is_static = */ true,
                             /* is_final = */ true,
                             /* is_const = */ true,
-                            /* is_synthetic = */ false,
+                            /* is_reflectable = */ true,
                             cls,
                             cls.token_pos());
   values_field.set_type(Type::Handle(Z, Type::ArrayType()));
@@ -5365,7 +5373,6 @@ void Parser::ParseTopLevelVariable(TopLevel* top_level,
   // Const fields are implicitly final.
   const bool is_final = is_const || (CurrentToken() == Token::kFINAL);
   const bool is_static = true;
-  const bool is_synthetic = false;
   const AbstractType& type = AbstractType::ZoneHandle(Z,
       ParseConstFinalVarOrType(ClassFinalizer::kResolveTypeParameters));
   Field& field = Field::Handle(Z);
@@ -5393,10 +5400,12 @@ void Parser::ParseTopLevelVariable(TopLevel* top_level,
                   var_name.ToCString());
     }
 
-    field = Field::New(var_name, is_static, is_final, is_const, is_synthetic,
+    const bool is_reflectable =
+        !(library_.is_dart_scheme() && library_.IsPrivate(var_name));
+    field = Field::New(var_name, is_static, is_final, is_const, is_reflectable,
                        current_class(), name_pos);
     field.set_type(type);
-    field.set_value(Instance::Handle(Z, Instance::null()));
+    field.set_value(Object::null_instance());
     top_level->fields.Add(field);
     library_.AddObject(field, var_name);
     if (metadata_pos >= 0) {
@@ -7012,14 +7021,14 @@ SequenceNode* Parser::CloseAsyncFunction(const Function& closure,
       Class::ZoneHandle(Z, I->object_store()->completer_class());
   ASSERT(!completer.IsNull());
   const Function& completer_constructor = Function::ZoneHandle(Z,
-      completer.LookupFunction(Symbols::CompleterConstructor()));
+      completer.LookupFunction(Symbols::CompleterSyncConstructor()));
   ASSERT(!completer_constructor.IsNull());
 
   LocalVariable* async_completer = current_block_->scope->LookupVariable(
       Symbols::AsyncCompleter(), false);
 
   // Add to AST:
-  //   :async_completer = new Completer();
+  //   :async_completer = new Completer.sync();
   ArgumentListNode* empty_args =
       new (Z) ArgumentListNode(Scanner::kNoSourcePos);
   ConstructorCallNode* completer_constructor_node = new (Z) ConstructorCallNode(
@@ -10561,7 +10570,8 @@ bool Parser::IsLegalAssignableSyntax(AstNode* expr, intptr_t end_pos) {
 AstNode* Parser::CreateAssignmentNode(AstNode* original,
                                       AstNode* rhs,
                                       const String* left_ident,
-                                      intptr_t left_pos) {
+                                      intptr_t left_pos,
+                                      bool is_compound /* = false */) {
   AstNode* result = original->MakeAssignmentNode(rhs);
   if (result == NULL) {
     String& name = String::ZoneHandle(Z);
@@ -10599,17 +10609,18 @@ AstNode* Parser::CreateAssignmentNode(AstNode* original,
   // normally: a op= b ==> a = a op b
   // however:  a ??= b ==> a ?? (a = b)
   // Therefore, we need to transform a = (a ?? b) into a ?? (a = b)
-  if (rhs->IsBinaryOpNode() &&
+  if (is_compound &&
+      rhs->IsBinaryOpNode() &&
       (rhs->AsBinaryOpNode()->kind() == Token::kIFNULL)) {
     BinaryOpNode* ifnull = rhs->AsBinaryOpNode();
     AstNode* modified_assign =
-        CreateAssignmentNode(ifnull->left(),
+        CreateAssignmentNode(original,
                              ifnull->right(),
                              left_ident,
                              left_pos);
     result = new(Z) BinaryOpNode(rhs->token_pos(),
                                  Token::kIFNULL,
-                                 original,
+                                 ifnull->left(),
                                  modified_assign);
   }
   return result;
@@ -10651,7 +10662,7 @@ AstNode* Parser::ParseCascades(AstNode* expr) {
         right_expr =
             ExpandAssignableOp(assignment_pos, assignment_op, expr, right_expr);
         AstNode* assign_expr =
-            CreateAssignmentNode(expr, right_expr, expr_ident, expr_pos);
+            CreateAssignmentNode(expr, right_expr, expr_ident, expr_pos, true);
         ASSERT(assign_expr != NULL);
         let_expr->AddNode(assign_expr);
         expr = let_expr;
@@ -10764,7 +10775,7 @@ AstNode* Parser::ParseExpr(bool require_compiletime_const,
     AstNode* assigned_value =
         ExpandAssignableOp(assignment_pos, assignment_op, expr, right_expr);
     AstNode* assign_expr =
-        CreateAssignmentNode(expr, assigned_value, expr_ident, expr_pos);
+        CreateAssignmentNode(expr, assigned_value, expr_ident, expr_pos, true);
     ASSERT(assign_expr != NULL);
     let_expr->AddNode(assign_expr);
     return let_expr;
@@ -10865,7 +10876,8 @@ AstNode* Parser::ParseUnaryExpr() {
         binary_op,
         expr,
         new(Z) LiteralNode(op_pos, Smi::ZoneHandle(Z, Smi::New(1))));
-    AstNode* store = CreateAssignmentNode(expr, add, expr_ident, expr_pos);
+    AstNode* store =
+        CreateAssignmentNode(expr, add, expr_ident, expr_pos, true);
     ASSERT(store != NULL);
     let_expr->AddNode(store);
     expr = let_expr;
@@ -11582,7 +11594,8 @@ AstNode* Parser::ParsePostfixExpr() {
         binary_op,
         new(Z) LoadLocalNode(expr_pos, temp),
         new(Z) LiteralNode(expr_pos, Smi::ZoneHandle(Z, Smi::New(1))));
-    AstNode* store = CreateAssignmentNode(expr, add, expr_ident, expr_pos);
+    AstNode* store =
+        CreateAssignmentNode(expr, add, expr_ident, expr_pos, true);
     ASSERT(store != NULL);
     // The result is a pair of the (side effects of the) store followed by
     // the (value of the) initial value temp variable load.
@@ -12022,7 +12035,7 @@ bool Parser::ResolveIdentInLocalScope(intptr_t ident_pos,
 AstNode* Parser::ResolveIdentInCurrentLibraryScope(intptr_t ident_pos,
                                                    const String& ident) {
   TRACE_PARSER("ResolveIdentInCurrentLibraryScope");
-  HANDLESCOPE(I);
+  HANDLESCOPE(thread());
   const Object& obj = Object::Handle(Z, library_.ResolveName(ident));
   if (obj.IsClass()) {
     const Class& cls = Class::Cast(obj);
@@ -12069,7 +12082,7 @@ AstNode* Parser::ResolveIdentInPrefixScope(intptr_t ident_pos,
                                            const LibraryPrefix& prefix,
                                            const String& ident) {
   TRACE_PARSER("ResolveIdentInPrefixScope");
-  HANDLESCOPE(I);
+  HANDLESCOPE(thread());
   if (ident.CharAt(0) == Library::kPrivateIdentifierStart) {
     // Private names are not exported by libraries. The name mangling
     // of private names with a library-specific suffix usually ensures
@@ -12877,6 +12890,7 @@ RawFunction* Parser::BuildConstructorClosureFunction(const Function& ctr,
                                          token_pos);
   closure.set_is_generated_body(true);
   closure.set_is_debuggable(false);
+  closure.set_is_visible(false);
   closure.set_result_type(AbstractType::Handle(Type::DynamicType()));
   AddFormalParamsToFunction(&params, closure);
 

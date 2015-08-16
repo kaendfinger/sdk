@@ -14,11 +14,13 @@ namespace dart {
 class CHA;
 class HandleScope;
 class Heap;
+class InterruptableThreadState;
 class Isolate;
 class Object;
 class RawBool;
 class RawObject;
 class StackResource;
+class TimelineEventBlock;
 class Zone;
 
 
@@ -119,6 +121,15 @@ class Thread {
     return OFFSET_OF(Thread, state_) + OFFSET_OF(State, top_resource);
   }
 
+  void set_thread_state(InterruptableThreadState* state) {
+    ASSERT((thread_state() == NULL) || (state == NULL));
+    state_.thread_state = state;
+  }
+
+  InterruptableThreadState* thread_state() const {
+    return state_.thread_state;
+  }
+
   static intptr_t heap_offset() {
     return OFFSET_OF(Thread, heap_);
   }
@@ -187,6 +198,9 @@ class Thread {
     Zone* zone;
     uword top_exit_frame_info;
     StackResource* top_resource;
+    TimelineEventBlock* timeline_block;
+    // TODO(koda): Migrate individual fields of InterruptableThreadState.
+    InterruptableThreadState* thread_state;
 #if defined(DEBUG)
     HandleScope* top_handle_scope;
     intptr_t no_handle_scope_depth;
@@ -203,6 +217,14 @@ CACHED_CONSTANTS_LIST(DEFINE_OFFSET_METHOD)
 
   static bool CanLoadFromThread(const Object& object);
   static intptr_t OffsetFromThread(const Object& object);
+
+  TimelineEventBlock* timeline_block() const {
+    return state_.timeline_block;
+  }
+
+  void set_timeline_block(TimelineEventBlock* block) {
+    state_.timeline_block = block;
+  }
 
  private:
   static ThreadLocalKey thread_key_;
@@ -240,6 +262,7 @@ CACHED_CONSTANTS_LIST(DECLARE_MEMBERS)
   friend class ApiZone;
   friend class Isolate;
   friend class StackZone;
+  friend class ThreadRegistry;
   DISALLOW_COPY_AND_ASSIGN(Thread);
 };
 

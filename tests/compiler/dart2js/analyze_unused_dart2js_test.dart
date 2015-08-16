@@ -6,7 +6,8 @@ library analyze_unused_dart2js;
 
 import 'package:async_helper/async_helper.dart';
 
-import 'package:compiler/src/dart2jslib.dart';
+import 'package:compiler/src/compiler.dart';
+import 'package:compiler/src/diagnostics/messages.dart';
 import 'package:compiler/src/filenames.dart';
 
 import 'analyze_helper.dart';
@@ -34,10 +35,6 @@ const Map<String, List<String>> WHITE_LIST = const {
   "lib/src/ssa/nodes.dart": const [
       "The method 'isArray' is never called"],
 
-  // Method in abstract class. Currently only instantiated trough tests.
-  "lib/src/constants/expressions.dart": const [
-      "The method 'readFromEnvironment' is never called"],
-
   // Serialization code is only used in test.
   "lib/src/serialization/": const [
       "is never"],
@@ -46,6 +43,9 @@ const Map<String, List<String>> WHITE_LIST = const {
   "lib/src/tree_ir/": const [
     "accept", "FunctionExpression", "CreateFunction"
   ],
+
+  // AllInfo.fromJson and visit methods are not used yet.
+  "lib/src/info/info.dart": const [ "is never" ],
 
   "lib/src/universe/universe.dart": const [
       "The method 'getterInvocationsByName' is never called.",

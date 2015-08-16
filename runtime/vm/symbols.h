@@ -119,7 +119,7 @@ class ObjectPointerVisitor;
   V(Completer, "Completer")                                                    \
   V(CompleterComplete, "complete")                                             \
   V(CompleterCompleteError, "completeError")                                   \
-  V(CompleterConstructor, "Completer.")                                        \
+  V(CompleterSyncConstructor, "Completer.sync")                                \
   V(CompleterFuture, "future")                                                 \
   V(StreamIterator, "StreamIterator")                                          \
   V(StreamIteratorConstructor, "StreamIterator.")                              \
@@ -390,6 +390,7 @@ class ObjectPointerVisitor;
   V(removeLast, "removeLast")                                                  \
   V(add, "add")                                                                \
   V(ConstructorClosurePrefix, "new#")                                          \
+  V(_scheduleExtension, "_scheduleExtension")                                  \
 
 
 // Contains a list of frequently used strings in a canonicalized form. This

@@ -150,6 +150,7 @@ class ParsedFunction : public ZoneAllocated {
   void record_await() { have_seen_await_expr_ = true; }
   bool have_seen_await() const { return have_seen_await_expr_; }
 
+  Thread* thread() const { return thread_; }
   Isolate* isolate() const { return thread_->isolate(); }
   Zone* zone() const { return thread_->zone(); }
 
@@ -799,7 +800,8 @@ class Parser : public ValueObject {
   AstNode* CreateAssignmentNode(AstNode* original,
                                 AstNode* rhs,
                                 const String* left_ident,
-                                intptr_t left_pos);
+                                intptr_t left_pos,
+                                bool is_compound = false);
   AstNode* InsertClosureCallNodes(AstNode* condition);
 
   ConstructorCallNode* CreateConstructorCallNode(
@@ -816,6 +818,7 @@ class Parser : public ValueObject {
 
   RawInstance* TryCanonicalize(const Instance& instance, intptr_t token_pos);
 
+  Thread* thread() const { return thread_; }
   Isolate* isolate() const { return isolate_; }
   Zone* zone() const { return thread_->zone(); }
 

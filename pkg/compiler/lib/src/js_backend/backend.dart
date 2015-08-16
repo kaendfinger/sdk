@@ -243,7 +243,7 @@ class JavaScriptBackend extends Backend {
 
 
   String get patchVersion => emitter.patchVersion;
-  
+
   bool get supportsReflection => emitter.emitter.supportsReflection;
 
   final Annotations annotations;
@@ -333,10 +333,13 @@ class JavaScriptBackend extends Backend {
 
   ClassElement jsInvocationMirrorClass;
 
-  /// If [true], the compiler will emit code that writes the name of the current
-  /// method together with its class and library to the console the first time
-  /// the method is called.
-  static const bool TRACE_CALLS = false;
+  /// If [true], the compiler will emit code that logs whenever a method is
+  /// called. When TRACE_METHOD is 'console' this will be logged
+  /// directly in the JavaScript console. When TRACE_METHOD is 'post' the
+  /// information will be sent to a server via a POST request.
+  static const String TRACE_METHOD = const String.fromEnvironment('traceCalls');
+  static const bool TRACE_CALLS =
+    TRACE_METHOD == 'post' || TRACE_METHOD == 'console';
   Element traceHelper;
 
   TypeMask get stringType => compiler.typesTask.stringType;
@@ -1160,7 +1163,8 @@ class JavaScriptBackend extends Backend {
     }
 
     if (TRACE_CALLS) {
-      traceHelper = findHelper('traceHelper');
+      traceHelper = findHelper(
+          TRACE_METHOD == 'console' ? 'consoleTraceHelper' : 'postTraceHelper');
       assert(traceHelper != null);
       enqueueInResolution(traceHelper, registry);
     }
@@ -1897,10 +1901,10 @@ class JavaScriptBackend extends Backend {
     return classElement.lookupConstructor("");
   }
 
-  Element getCompleterConstructor() {
+  Element getSyncCompleterConstructor() {
     ClassElement classElement = find(compiler.asyncLibrary, "Completer");
     classElement.ensureResolved(compiler);
-    return classElement.lookupConstructor("");
+    return classElement.lookupConstructor("sync");
   }
 
   Element getASyncStarController() {
@@ -2689,7 +2693,7 @@ class JavaScriptBackend extends Backend {
                            Registry registry) {
     if (element.asyncMarker == AsyncMarker.ASYNC) {
       enqueue(enqueuer, getAsyncHelper(), registry);
-      enqueue(enqueuer, getCompleterConstructor(), registry);
+      enqueue(enqueuer, getSyncCompleterConstructor(), registry);
       enqueue(enqueuer, getStreamIteratorConstructor(), registry);
     } else if (element.asyncMarker == AsyncMarker.SYNC_STAR) {
       ClassElement clsSyncStarIterable = getSyncStarIterable();
@@ -2730,6 +2734,61 @@ class JavaScriptBackend extends Backend {
       return false;
     }
     return true;
+  }
+
+  jsAst.Expression rewriteAsync(FunctionElement element,
+                                jsAst.Expression code) {
+    AsyncRewriterBase rewriter = null;
+    jsAst.Name name = namer.methodPropertyName(element);
+    switch (element.asyncMarker) {
+      case AsyncMarker.ASYNC:
+        rewriter = new AsyncRewriter(
+            compiler,
+            compiler.currentElement,
+            asyncHelper:
+                emitter.staticFunctionAccess(getAsyncHelper()),
+            newCompleter: emitter.staticFunctionAccess(
+                getSyncCompleterConstructor()),
+            safeVariableName: namer.safeVariablePrefixForAsyncRewrite,
+            bodyName: namer.deriveAsyncBodyName(name));
+        break;
+      case AsyncMarker.SYNC_STAR:
+        rewriter = new SyncStarRewriter(
+            compiler,
+            compiler.currentElement,
+            endOfIteration: emitter.staticFunctionAccess(
+                getEndOfIteration()),
+            newIterable: emitter.staticFunctionAccess(
+                getSyncStarIterableConstructor()),
+            yieldStarExpression: emitter.staticFunctionAccess(
+                getYieldStar()),
+            uncaughtErrorExpression: emitter.staticFunctionAccess(
+                getSyncStarUncaughtError()),
+            safeVariableName: namer.safeVariablePrefixForAsyncRewrite,
+            bodyName: namer.deriveAsyncBodyName(name));
+         break;
+      case AsyncMarker.ASYNC_STAR:
+        rewriter = new AsyncStarRewriter(
+            compiler,
+            compiler.currentElement,
+            asyncStarHelper: emitter.staticFunctionAccess(
+                getAsyncStarHelper()),
+            streamOfController: emitter.staticFunctionAccess(
+                getStreamOfController()),
+            newController: emitter.staticFunctionAccess(
+                getASyncStarControllerConstructor()),
+            safeVariableName: namer.safeVariablePrefixForAsyncRewrite,
+            yieldExpression: emitter.staticFunctionAccess(
+                getYieldSingle()),
+            yieldStarExpression: emitter.staticFunctionAccess(
+                getYieldStar()),
+            bodyName: namer.deriveAsyncBodyName(name));
+        break;
+      default:
+        assert(element.asyncMarker == AsyncMarker.SYNC);
+        return code;
+    }
+    return rewriter.rewrite(code);
   }
 }
 

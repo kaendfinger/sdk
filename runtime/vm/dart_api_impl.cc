@@ -36,6 +36,7 @@
 #include "vm/stack_frame.h"
 #include "vm/symbols.h"
 #include "vm/tags.h"
+#include "vm/thread_registry.h"
 #include "vm/timeline.h"
 #include "vm/timer.h"
 #include "vm/unicode.h"
@@ -2742,6 +2743,68 @@ DART_EXPORT Dart_Handle Dart_ListGetAt(Dart_Handle list, intptr_t index) {
 }
 
 
+#define GET_LIST_RANGE(isolate, type, obj, offset, length)                     \
+  const type& array_obj = type::Cast(obj);                                     \
+  if ((offset >= 0) && (offset + length <= array_obj.Length())) {              \
+    for (intptr_t index = 0; index < length; ++index) {                        \
+      result[index] = Api::NewHandle(isolate, array_obj.At(index + offset));   \
+    }                                                                          \
+    return Api::Success();                                                     \
+  }                                                                            \
+  return Api::NewError("Invalid offset/length passed in to access list");      \
+
+
+DART_EXPORT Dart_Handle Dart_ListGetRange(Dart_Handle list,
+                                          intptr_t offset,
+                                          intptr_t length,
+                                          Dart_Handle* result) {
+  Isolate* isolate = Isolate::Current();
+  DARTSCOPE(isolate);
+  if (result == NULL) {
+    RETURN_NULL_ERROR(result);
+  }
+  const Object& obj = Object::Handle(isolate, Api::UnwrapHandle(list));
+  if (obj.IsArray()) {
+    GET_LIST_RANGE(isolate, Array, obj, offset, length);
+  } else if (obj.IsGrowableObjectArray()) {
+    GET_LIST_RANGE(isolate, GrowableObjectArray, obj, offset, length);
+  } else if (obj.IsError()) {
+    return list;
+  } else {
+    CHECK_CALLBACK_STATE(isolate);
+    // Check and handle a dart object that implements the List interface.
+    const Instance& instance =
+        Instance::Handle(isolate, GetListInstance(isolate, obj));
+    if (!instance.IsNull()) {
+      const intptr_t kNumArgs = 2;
+      ArgumentsDescriptor args_desc(
+          Array::Handle(ArgumentsDescriptor::New(kNumArgs)));
+      const Function& function = Function::Handle(
+          isolate,
+          Resolver::ResolveDynamic(instance,
+                                   Symbols::AssignIndexToken(),
+                                   args_desc));
+      if (!function.IsNull()) {
+        const Array& args = Array::Handle(Array::New(kNumArgs));
+        args.SetAt(0, instance);
+        Instance& index = Instance::Handle(isolate);
+        for (intptr_t i = 0; i < length; ++i) {
+          index = Integer::New(i);
+          args.SetAt(1, index);
+          Dart_Handle value = Api::NewHandle(isolate,
+              DartEntry::InvokeFunction(function, args));
+          if (::Dart_IsError(value))
+            return value;
+          result[i] = value;
+        }
+        return Api::Success();
+      }
+    }
+    return Api::NewError("Object does not implement the 'List' interface");
+  }
+}
+
+
 #define SET_LIST_ELEMENT(isolate, type, obj, index, value)                     \
   const type& array = type::Cast(obj);                                         \
   const Object& value_obj = Object::Handle(isolate, Api::UnwrapHandle(value)); \
@@ -5123,7 +5186,7 @@ static void CompileSource(Isolate* isolate,
     *result = Api::NewHandle(isolate, error.raw());
     // Compilation errors are not Dart instances, so just mark the library
     // as having failed to load without providing an error instance.
-    lib.SetLoadError(Instance::Handle());
+    lib.SetLoadError(Object::null_instance());
   }
 }
 
@@ -5765,6 +5828,95 @@ DART_EXPORT Dart_Handle Dart_ServiceSendDataEvent(const char* stream_id,
   Service::SendEmbedderEvent(isolate, stream_id, event_kind,
                              bytes, bytes_length);
   return Api::Success();
+}
+
+
+DART_EXPORT void Dart_TimelineSetRecordedStreams(int64_t stream_mask) {
+  Isolate* isolate = Isolate::Current();
+  CHECK_ISOLATE(isolate);
+  isolate->GetAPIStream()->set_enabled(
+      (stream_mask & DART_TIMELINE_STREAM_API) != 0);
+  isolate->GetCompilerStream()->set_enabled(
+      (stream_mask & DART_TIMELINE_STREAM_COMPILER) != 0);
+  isolate->GetEmbedderStream()->set_enabled(
+      (stream_mask & DART_TIMELINE_STREAM_EMBEDDER) != 0);
+  isolate->GetGCStream()->set_enabled(
+      (stream_mask & DART_TIMELINE_STREAM_GC) != 0);
+  isolate->GetIsolateStream()->set_enabled(
+      (stream_mask & DART_TIMELINE_STREAM_ISOLATE) != 0);
+}
+
+
+DART_EXPORT bool Dart_TimelineGetTrace(Dart_StreamConsumer consumer,
+                                       void* user_data) {
+  Isolate* isolate = Isolate::Current();
+  CHECK_ISOLATE(isolate);
+  if (consumer == NULL) {
+    return false;
+  }
+  TimelineEventRecorder* timeline_recorder = isolate->timeline_event_recorder();
+  if (timeline_recorder == NULL) {
+    // Nothing has been recorded.
+    return false;
+  }
+  // Suspend execution of other threads while serializing to JSON.
+  isolate->thread_registry()->SafepointThreads();
+  JSONStream js;
+  timeline_recorder->PrintJSON(&js);
+  // Resume execution of other threads.
+  isolate->thread_registry()->ResumeAllThreads();
+
+  // Copy output.
+  char* output = NULL;
+  intptr_t output_length = 0;
+  js.Steal(const_cast<const char**>(&output), &output_length);
+  if (output != NULL) {
+    // Add one for the '\0' character.
+    output_length++;
+  }
+  // Start stream.
+  const char* kStreamName = "timeline";
+  const intptr_t kDataSize = 64 * KB;
+  consumer(Dart_StreamConsumer_kStart,
+           kStreamName,
+           NULL,
+           0,
+           user_data);
+
+  // Stream out data.
+  intptr_t cursor = 0;
+  intptr_t remaining = output_length;
+  while (remaining >= kDataSize) {
+    consumer(Dart_StreamConsumer_kData,
+             kStreamName,
+             reinterpret_cast<uint8_t*>(&output[cursor]),
+             kDataSize,
+             user_data);
+    cursor += kDataSize;
+    remaining -= kDataSize;
+  }
+  if (remaining > 0) {
+    ASSERT(remaining < kDataSize);
+    consumer(Dart_StreamConsumer_kData,
+             kStreamName,
+             reinterpret_cast<uint8_t*>(&output[cursor]),
+             remaining,
+             user_data);
+    cursor += remaining;
+    remaining -= remaining;
+  }
+  ASSERT(cursor == output_length);
+  ASSERT(remaining == 0);
+  // We stole the JSONStream's output buffer, free it.
+  free(output);
+
+  // Finish stream.
+  consumer(Dart_StreamConsumer_kFinish,
+           kStreamName,
+           NULL,
+           0,
+           user_data);
+  return true;
 }
 
 

@@ -20,7 +20,8 @@ import 'dart:_js_embedded_names' show
     JsGetName,
     LEAF_TAGS,
     NATIVE_SUPERCLASS_TAG_NAME,
-    STATIC_FUNCTION_NAME_PROPERTY_NAME;
+    STATIC_FUNCTION_NAME_PROPERTY_NAME,
+    TRACE_BUFFER;
 
 import 'dart:collection';
 
@@ -57,7 +58,10 @@ import 'dart:_foreign_helper' show
 
 import 'dart:_interceptors';
 import 'dart:_internal' as _symbol_dev;
-import 'dart:_internal' show EfficientLength, MappedIterable;
+import 'dart:_internal' show
+    EfficientLength,
+    MappedIterable,
+    IterableElementError;
 
 import 'dart:_native_typed_data';
 
@@ -148,7 +152,7 @@ bool builtinIsSubtype(type, String other) {
 @ForceInline()
 bool isDartFunctionTypeRti(Object type) {
   return JS_BUILTIN('returns:bool;effects:none;depends:none',
-                    JsBuiltin.isGivenTypeRti, 
+                    JsBuiltin.isGivenTypeRti,
                     type,
                     JS_GET_NAME(JsGetName.FUNCTION_CLASS_TYPE_NAME));
 }
@@ -158,7 +162,7 @@ bool isDartFunctionTypeRti(Object type) {
 @ForceInline()
 bool isDartObjectTypeRti(type) {
   return JS_BUILTIN('returns:bool;effects:none;depends:none',
-                    JsBuiltin.isGivenTypeRti, 
+                    JsBuiltin.isGivenTypeRti,
                     type,
                     JS_GET_NAME(JsGetName.OBJECT_CLASS_TYPE_NAME));
 }
@@ -168,7 +172,7 @@ bool isDartObjectTypeRti(type) {
 @ForceInline()
 bool isNullTypeRti(type) {
   return JS_BUILTIN('returns:bool;effects:none;depends:none',
-                    JsBuiltin.isGivenTypeRti, 
+                    JsBuiltin.isGivenTypeRti,
                     type,
                     JS_GET_NAME(JsGetName.NULL_CLASS_TYPE_NAME));
 }
@@ -257,7 +261,7 @@ void throwInvalidReflectionError(String memberName) {
 /// Helper to print the given method information to the console the first
 /// time it is called with it.
 @NoInline()
-void traceHelper(String method) {
+void consoleTraceHelper(String method) {
   if (JS('bool', '!this.cache')) {
     JS('', 'this.cache = Object.create(null)');
   }
@@ -265,6 +269,31 @@ void traceHelper(String method) {
     JS('', 'console.log(#)', method);
     JS('', 'this.cache[#] = true', method);
   }
+}
+
+List _traceBuffer;
+
+/// Helper to send coverage information as a POST request to a server.
+@NoInline()
+void postTraceHelper(int id, String name) {
+  // Note: we can't move this initialization to the declaration of
+  // [_traceBuffer] because [postTraceHelper] is called very early on functions
+  // that define constants, this happens before getters and setters are expanded
+  // and before main starts executing. This initialization here allows us to
+  // skip the lazy field initialization logic.
+  if (_traceBuffer == null) _traceBuffer = JS('JSArray', '[]');
+  if (JS('bool', '#.length == 0', _traceBuffer)) {
+    JS('', r'''
+      window.setTimeout((function(buffer) {
+        return function() {
+          var xhr = new XMLHttpRequest();
+          xhr.open("POST", "/coverage_uri_to_amend_by_server");
+          xhr.send(JSON.stringify(buffer));
+          buffer.length = 0;
+        };
+      })(#), 1000)''', _traceBuffer);
+  }
+  JS('', '#.push([#, #])', _traceBuffer, id, name);
 }
 
 class JSInvocationMirror implements Invocation {

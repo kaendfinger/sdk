@@ -1368,6 +1368,28 @@ TEST_CASE(ListAccess) {
   result = Dart_ListGetAt(list_access_test_obj, 4);
   EXPECT(Dart_IsError(result));
 
+  // Check if we can get a range of values.
+  result = Dart_ListGetRange(list_access_test_obj, 8, 4, NULL);
+  EXPECT(Dart_IsError(result));
+  const int kRangeOffset = 1;
+  const int kRangeLength = 2;
+  Dart_Handle values[kRangeLength];
+
+  result = Dart_ListGetRange(list_access_test_obj, 8, 4, values);
+  EXPECT(Dart_IsError(result));
+
+  result = Dart_ListGetRange(
+      list_access_test_obj, kRangeOffset, kRangeLength, values);
+  EXPECT_VALID(result);
+
+  result = Dart_IntegerToInt64(values[0], &value);
+  EXPECT_VALID(result);
+  EXPECT_EQ(20, value);
+
+  result = Dart_IntegerToInt64(values[1], &value);
+  EXPECT_VALID(result);
+  EXPECT_EQ(30, value);
+
   // Check that we get an exception (and not a fatal error) when
   // calling ListSetAt and ListSetAsBytes with an immutable list.
   list_access_test_obj = Dart_Invoke(lib, NewString("immutable"), 0, NULL);
@@ -9276,6 +9298,82 @@ TEST_CASE(Timeline_Dart_TimelineAsync) {
   JSONStream js;
   recorder->PrintJSON(&js);
   EXPECT_SUBSTRING("testAsyncEvent", js.ToCString());
+}
+
+
+struct AppendData {
+  uint8_t* buffer;
+  intptr_t buffer_length;
+};
+
+
+static void AppendStreamConsumer(Dart_StreamConsumer_State state,
+                                 const char* stream_name,
+                                 uint8_t* buffer,
+                                 intptr_t buffer_length,
+                                 void* user_data) {
+  if (state == Dart_StreamConsumer_kFinish) {
+    return;
+  }
+  AppendData* data = reinterpret_cast<AppendData*>(user_data);
+  if (state == Dart_StreamConsumer_kStart) {
+    // Initialize append data.
+    data->buffer = NULL;
+    data->buffer_length = 0;
+    return;
+  }
+  ASSERT(state == Dart_StreamConsumer_kData);
+  // Grow buffer.
+  data->buffer = reinterpret_cast<uint8_t*>(
+      realloc(data->buffer, data->buffer_length + buffer_length));
+  // Copy new data.
+  memmove(&data->buffer[data->buffer_length],
+          buffer,
+          buffer_length);
+  // Update length.
+  data->buffer_length += buffer_length;
+}
+
+
+TEST_CASE(Timeline_Dart_TimelineGetTrace) {
+  const char* kScriptChars =
+    "foo() => 'a';\n"
+    "main() => foo();\n";
+
+  Dart_Handle lib =
+      TestCase::LoadTestScript(kScriptChars, NULL);
+
+  const char* buffer = NULL;
+  intptr_t buffer_length = 0;
+  bool success = false;
+
+  // Enable recording of all streams.
+  Dart_TimelineSetRecordedStreams(DART_TIMELINE_STREAM_ALL);
+
+  // Invoke main, which will be compiled resulting in a compiler event in
+  // the timeline.
+  Dart_Handle result = Dart_Invoke(lib,
+                                   NewString("main"),
+                                   0,
+                                   NULL);
+  EXPECT_VALID(result);
+
+  // Grab the trace.
+  AppendData data;
+  success = Dart_TimelineGetTrace(AppendStreamConsumer, &data);
+  EXPECT(success);
+  buffer = reinterpret_cast<char*>(data.buffer);
+  buffer_length = data.buffer_length;
+  EXPECT(buffer_length > 0);
+  EXPECT(buffer != NULL);
+
+  // Heartbeat test.
+  EXPECT_SUBSTRING("\"cat\":\"Compiler\"", buffer);
+  EXPECT_SUBSTRING("\"name\":\"CompileFunction\"", buffer);
+  EXPECT_SUBSTRING("\"function\":\"main\"", buffer);
+
+  // Free buffer allocated by AppendStreamConsumer
+  free(data.buffer);
 }
 
 }  // namespace dart

@@ -2,7 +2,15 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-part of dart2js;
+library dart2js.diagnostic_listener;
+
+import 'source_span.dart' show
+    SourceSpan;
+import 'spannable.dart' show
+    Spannable;
+import '../elements/elements.dart' show
+    Element;
+import 'messages.dart';
 
 abstract class DiagnosticListener {
   // TODO(karlklose): rename log to something like reportInfo.

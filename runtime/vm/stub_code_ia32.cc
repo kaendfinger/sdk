@@ -353,13 +353,6 @@ static void PushArgumentsArray(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t, DeoptimizeCopyFrame,
-                           intptr_t deopt_reason,
-                           uword saved_registers_address);
-
-DECLARE_LEAF_RUNTIME_ENTRY(void, DeoptimizeFillFrame, uword last_fp);
-
-
 // Used by eager and lazy deoptimization. Preserve result in EAX if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -582,7 +575,7 @@ void StubCode::GenerateAllocateArrayStub(Assembler* assembler) {
   __ MaybeTraceAllocation(kArrayCid,
                           EAX,
                           &slow_case,
-                          /* near_jump = */ false,
+                          Assembler::kFarJump,
                           /* inline_isolate = */ false);
 
   const intptr_t fixed_size = sizeof(RawArray) + kObjectAlignment - 1;
@@ -815,6 +808,12 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
     __ leal(EBX, Address(EDX, TIMES_4, fixed_size));
     __ andl(EBX, Immediate(-kObjectAlignment));
 
+    __ MaybeTraceAllocation(kContextCid,
+                            EAX,
+                            &slow_case,
+                            Assembler::kFarJump,
+                            /* inline_isolate = */ false);
+
     // Now allocate the object.
     // EDX: number of context variables.
     const intptr_t cid = kContextCid;
@@ -929,7 +928,6 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
   __ ret();
 }
 
-DECLARE_LEAF_RUNTIME_ENTRY(void, StoreBufferBlockProcess, Isolate* isolate);
 
 // Helper stub to implement Assembler::StoreIntoObject.
 // Input parameters:
@@ -1027,8 +1025,9 @@ void StubCode::GenerateAllocationStubForClass(
     __ movl(EDX, Address(ESP, kObjectTypeArgumentsOffset));
     // EDX: instantiated type arguments.
   }
+  Isolate* isolate = Isolate::Current();
   if (FLAG_inline_alloc && Heap::IsAllocatableInNewSpace(instance_size) &&
-      !cls.trace_allocation()) {
+      !cls.TraceAllocation(isolate)) {
     Label slow_case;
     // Allocate the object and update top to point to
     // next object start and initialize the allocated object.
@@ -1922,12 +1921,6 @@ void StubCode::GenerateOptimizeFunctionStub(Assembler* assembler) {
   __ jmp(EAX);
   __ int3();
 }
-
-
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t,
-                           BigintCompare,
-                           RawBigint* left,
-                           RawBigint* right);
 
 
 // Does identical check (object references are equal or not equal) with special

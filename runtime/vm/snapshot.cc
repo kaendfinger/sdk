@@ -325,6 +325,11 @@ RawObject* SnapshotReader::VmIsolateSnapshotObject(intptr_t index) const {
 }
 
 
+bool SnapshotReader::is_vm_isolate() const {
+  return isolate_ == Dart::vm_isolate();
+}
+
+
 RawObject* SnapshotReader::ReadObjectImpl(bool as_reference,
                                           intptr_t patch_object_id,
                                           intptr_t patch_offset) {
@@ -463,9 +468,6 @@ RawObject* SnapshotReader::ReadObjectRef(intptr_t object_id,
 #undef SNAPSHOT_READ
     default: UNREACHABLE(); break;
   }
-  if (kind_ == Snapshot::kFull) {
-    pobj_.SetCreatedFromSnapshot();
-  }
   return pobj_.raw();
 }
 
@@ -536,10 +538,14 @@ RawObject* SnapshotReader::ReadInlinedObject(intptr_t object_id,
         result->SetFieldAtOffset(offset, Object::null_object());
         offset += kWordSize;
       }
-      result->SetCreatedFromSnapshot();
-    } else if (RawObject::IsCanonical(tags)) {
-      *result = result->CheckAndCanonicalize(NULL);
-      ASSERT(!result->IsNull());
+    }
+    if (RawObject::IsCanonical(tags)) {
+      if (kind_ == Snapshot::kFull) {
+        result->SetCanonical();
+      } else {
+        *result = result->CheckAndCanonicalize(NULL);
+        ASSERT(!result->IsNull());
+      }
     }
     return result->raw();
   } else if (header_id == kStaticImplicitClosureObjectId) {
@@ -577,9 +583,6 @@ RawObject* SnapshotReader::ReadInlinedObject(intptr_t object_id,
     }
 #undef SNAPSHOT_READ
     default: UNREACHABLE(); break;
-  }
-  if (kind_ == Snapshot::kFull) {
-    pobj_.SetCreatedFromSnapshot();
   }
   AddPatchRecord(object_id, patch_object_id, patch_offset);
   return pobj_.raw();
@@ -1071,6 +1074,7 @@ RawObject* SnapshotReader::AllocateUninitialized(intptr_t class_id,
   ASSERT(class_id != kIllegalCid);
   tags = RawObject::ClassIdTag::update(class_id, tags);
   tags = RawObject::SizeTag::update(size, tags);
+  tags = RawObject::VMHeapObjectTag::update(is_vm_isolate(), tags);
   raw_obj->ptr()->tags_ = tags;
   return raw_obj;
 }
@@ -1164,41 +1168,36 @@ void SnapshotReader::ProcessDeferredCanonicalizations() {
     BackRefNode& backref = (*backward_references_)[i];
     if (backref.defer_canonicalization()) {
       Object* objref = backref.reference();
-      bool needs_patching = false;
       // Object should either be an abstract type or a type argument.
       if (objref->IsType()) {
         typeobj ^= objref->raw();
         newobj = typeobj.Canonicalize();
-        if ((newobj.raw() != typeobj.raw()) && !typeobj.IsRecursive()) {
-          needs_patching = true;
-        } else {
-          // Set Canonical bit.
-          objref->SetCanonical();
-        }
       } else {
         ASSERT(objref->IsTypeArguments());
         typeargs ^= objref->raw();
         newobj = typeargs.Canonicalize();
-        if ((newobj.raw() != typeargs.raw()) && !typeargs.IsRecursive()) {
-          needs_patching = true;
-        } else {
-          // Set Canonical bit.
-          objref->SetCanonical();
-        }
       }
-      if (needs_patching) {
+      if (newobj.raw() != objref->raw()) {
         ZoneGrowableArray<intptr_t>* patches = backref.patch_records();
         ASSERT(newobj.IsCanonical());
         ASSERT(patches != NULL);
+        // First we replace the back ref table with the canonical object.
+        *objref = newobj.raw();
+        // Now we go over all the patch records and patch the canonical object.
         for (intptr_t j = 0; j < patches->length(); j+=2) {
           NoSafepointScope no_safepoint;
           intptr_t patch_object_id = (*patches)[j];
           intptr_t patch_offset = (*patches)[j + 1];
           Object* target = GetBackRef(patch_object_id);
-          RawObject** rawptr =
-              reinterpret_cast<RawObject**>(target->raw()->ptr());
-          target->StorePointer((rawptr + patch_offset), newobj.raw());
+          // We should not backpatch an object that is canonical.
+          if (!target->IsCanonical()) {
+            RawObject** rawptr =
+                reinterpret_cast<RawObject**>(target->raw()->ptr());
+            target->StorePointer((rawptr + patch_offset), newobj.raw());
+          }
         }
+      } else {
+        ASSERT(objref->IsCanonical());
       }
     }
   }
@@ -1209,9 +1208,6 @@ void SnapshotReader::ArrayReadFrom(intptr_t object_id,
                                    const Array& result,
                                    intptr_t len,
                                    intptr_t tags) {
-  // Set the object tags.
-  result.set_tags(tags);
-
   // Setup the object fields.
   const intptr_t typeargs_offset =
       GrowableObjectArray::type_arguments_offset() / kWordSize;
@@ -2053,11 +2049,6 @@ void SnapshotWriter::WriteClassId(RawClass* cls) {
   ASSERT(kind_ != Snapshot::kFull);
   int class_id = cls->ptr()->id_;
   ASSERT(!IsSingletonClassId(class_id) && !IsObjectStoreClassId(class_id));
-  // TODO(5411462): Should restrict this to only core-lib classes in this
-  // case.
-  // Write out the class and tags information.
-  WriteVMIsolateObject(kClassCid);
-  WriteTags(GetObjectTags(cls));
 
   // Write out the library url and class name.
   RawLibrary* library = cls->ptr()->library_;

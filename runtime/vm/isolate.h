@@ -7,6 +7,7 @@
 
 #include "include/dart_api.h"
 #include "platform/assert.h"
+#include "vm/atomic.h"
 #include "vm/base_isolate.h"
 #include "vm/class_table.h"
 #include "vm/counters.h"
@@ -272,13 +273,25 @@ class Isolate : public BaseIsolate {
   // stack allocated local, but plays well with AddressSanitizer.
   static uword GetCurrentStackPointer();
 
+  // Returns true if any of the interrupts specified by 'interrupt_bits' are
+  // currently scheduled for this isolate, but leaves them unchanged.
+  //
+  // NOTE: The read uses relaxed memory ordering, i.e., it is atomic and
+  // an interrupt is guaranteed to be observed eventually, but any further
+  // order guarantees must be ensured by other synchronization. See the
+  // tests in isolate_test.cc for example usage.
+  bool HasInterruptsScheduled(uword interrupt_bits) {
+    ASSERT(interrupt_bits == (interrupt_bits & kInterruptsMask));
+    uword limit = AtomicOperations::LoadRelaxed(&stack_limit_);
+    return (limit != saved_stack_limit_) &&
+        (((limit & kInterruptsMask) & interrupt_bits) != 0);
+  }
+
+  // Access to the current stack limit for generated code.  This may be
+  // overwritten with a special value to trigger interrupts.
   uword stack_limit_address() const {
     return reinterpret_cast<uword>(&stack_limit_);
   }
-
-  // The current stack limit.  This may be overwritten with a special
-  // value to trigger interrupts.
-  uword stack_limit() const { return stack_limit_; }
   static intptr_t stack_limit_offset() {
     return OFFSET_OF(Isolate, stack_limit_);
   }
@@ -464,7 +477,7 @@ class Isolate : public BaseIsolate {
 
   void AddErrorListener(const SendPort& listener);
   void RemoveErrorListener(const SendPort& listener);
-  void NotifyErrorListeners(const String& msg, const String& stacktrace);
+  bool NotifyErrorListeners(const String& msg, const String& stacktrace);
 
   bool ErrorsFatal() const { return errors_fatal_; }
   void SetErrorsFatal(bool val) { errors_fatal_ = val; }
@@ -632,13 +645,8 @@ class Isolate : public BaseIsolate {
 
   void PrintJSON(JSONStream* stream, bool ref = true);
 
-  void set_thread_state(InterruptableThreadState* state) {
-    ASSERT((thread_state_ == NULL) || (state == NULL));
-    thread_state_ = state;
-  }
-
   InterruptableThreadState* thread_state() const {
-    return thread_state_;
+    return (mutator_thread_ == NULL) ? NULL : mutator_thread_->thread_state();
   }
 
   CompilerStats* compiler_stats() {
@@ -858,7 +866,6 @@ class Isolate : public BaseIsolate {
 
   IsolateProfilerData* profiler_data_;
   Mutex profiler_data_mutex_;
-  InterruptableThreadState* thread_state_;
 
   VMTagCounters vm_tag_counters_;
   uword user_tag_;

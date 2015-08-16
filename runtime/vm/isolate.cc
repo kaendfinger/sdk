@@ -569,10 +569,14 @@ bool IsolateMessageHandler::ProcessUnhandledException(const Error& result) {
   } else {
     exc_str = String::New(result.ToErrorCString());
   }
-  I->NotifyErrorListeners(exc_str, stacktrace_str);
+  bool has_listener = I->NotifyErrorListeners(exc_str, stacktrace_str);
 
   if (I->ErrorsFatal()) {
-    I->object_store()->set_sticky_error(result);
+    if (has_listener) {
+      I->object_store()->clear_sticky_error();
+    } else {
+      I->object_store()->set_sticky_error(result);
+    }
     return false;
   }
   return true;
@@ -685,7 +689,6 @@ Isolate::Isolate(const Dart_IsolateFlags& api_flags)
       trace_buffer_(NULL),
       timeline_event_recorder_(NULL),
       profiler_data_(NULL),
-      thread_state_(NULL),
       tag_table_(GrowableObjectArray::null()),
       current_tag_(UserTag::null()),
       default_tag_(UserTag::null()),
@@ -1204,11 +1207,11 @@ void Isolate::RemoveErrorListener(const SendPort& listener) {
 }
 
 
-void Isolate::NotifyErrorListeners(const String& msg,
+bool Isolate::NotifyErrorListeners(const String& msg,
                                    const String& stacktrace) {
   const GrowableObjectArray& listeners = GrowableObjectArray::Handle(
       this, this->object_store()->error_listeners());
-  if (listeners.IsNull()) return;
+  if (listeners.IsNull()) return false;
 
   const Array& arr = Array::Handle(this, Array::New(2));
   arr.SetAt(0, msg);
@@ -1225,6 +1228,7 @@ void Isolate::NotifyErrorListeners(const String& msg,
       PortMap::PostMessage(msg);
     }
   }
+  return listeners.Length() > 0;
 }
 
 
@@ -1599,14 +1603,6 @@ void Isolate::VisitObjectPointers(ObjectPointerVisitor* visitor,
   // Visit objects in isolate specific handles area.
   reusable_handles_.VisitObjectPointers(visitor);
 
-  // Iterate over all the stack frames and visit objects on the stack.
-  StackFrameIterator frames_iterator(validate_frames);
-  StackFrame* frame = frames_iterator.NextFrame();
-  while (frame != NULL) {
-    frame->VisitObjectPointers(visitor);
-    frame = frames_iterator.NextFrame();
-  }
-
   // Visit the dart api state for all local and persistent handles.
   if (api_state() != NULL) {
     api_state()->VisitObjectPointers(visitor, visit_prologue_weak_handles);
@@ -1636,8 +1632,8 @@ void Isolate::VisitObjectPointers(ObjectPointerVisitor* visitor,
     deopt_context()->VisitObjectPointers(visitor);
   }
 
-  // Visit objects in thread registry (e.g., handles in zones).
-  thread_registry()->VisitObjectPointers(visitor);
+  // Visit objects in thread registry (e.g., Dart stack, handles in zones).
+  thread_registry()->VisitObjectPointers(visitor, validate_frames);
 }
 
 

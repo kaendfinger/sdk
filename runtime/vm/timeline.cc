@@ -6,13 +6,15 @@
 
 #include "vm/isolate.h"
 #include "vm/json_stream.h"
+#include "vm/lockers.h"
 #include "vm/object.h"
 #include "vm/thread.h"
 #include "vm/timeline.h"
 
 namespace dart {
 
-DEFINE_FLAG(bool, trace_timeline, false, "Timeline trace");
+DEFINE_FLAG(bool, trace_timeline, false, "Trace timeline backend");
+DEFINE_FLAG(bool, complete_timeline, false, "Record the complete timeline");
 
 TimelineEvent::TimelineEvent()
     : timestamp0_(0),
@@ -22,7 +24,7 @@ TimelineEvent::TimelineEvent()
       state_(0),
       label_(NULL),
       stream_(NULL),
-      thread_(NULL) {
+      thread_(OSThread::kInvalidThreadId) {
 }
 
 
@@ -33,7 +35,7 @@ TimelineEvent::~TimelineEvent() {
 
 void TimelineEvent::Reset() {
   set_event_type(kNone);
-  thread_ = NULL;
+  thread_ = OSThread::kInvalidThreadId;
   stream_ = NULL;
   label_ = NULL;
   FreeArguments();
@@ -169,30 +171,16 @@ void TimelineEvent::Init(EventType event_type,
   set_event_type(event_type);
   timestamp0_ = 0;
   timestamp1_ = 0;
-  thread_ = Thread::Current();
+  thread_ = OSThread::GetCurrentThreadId();
   label_ = label;
   FreeArguments();
 }
 
 
-static int64_t GetPid(Isolate* isolate) {
-  // Some mapping from Isolate* to an integer process id.
-  // TODO(Cutch): Investigate if process ids can be strings.
-  return static_cast<int64_t>(reinterpret_cast<uintptr_t>(isolate));
-}
-
-
-static int64_t GetTid(Thread* thread) {
-  // Some mapping from Thread* to an integer thread id.
-  // TODO(Cutch): Investigate if process ids can be strings.
-  return static_cast<int64_t>(reinterpret_cast<uintptr_t>(thread));
-}
-
-
 void TimelineEvent::PrintJSON(JSONStream* stream) const {
   JSONObject obj(stream);
-  int64_t pid = GetPid(Isolate::Current());
-  int64_t tid = GetTid(thread_);
+  int64_t pid = OS::ProcessId();
+  int64_t tid = OSThread::ThreadIdToIntPtr(thread_);
   obj.AddProperty("name", label_);
   obj.AddProperty("cat", stream_->name());
   obj.AddProperty64("tid", tid);
@@ -341,16 +329,25 @@ TimelineEventRecorder::TimelineEventRecorder() {
 
 
 void TimelineEventRecorder::PrintJSONMeta(JSONArray* events) const {
-  Isolate* isolate = Isolate::Current();
-  JSONObject obj(events);
-  int64_t pid = GetPid(isolate);
-  obj.AddProperty("ph", "M");
-  obj.AddProperty64("pid", pid);
-  obj.AddProperty("name", "process_name");
-  {
-    JSONObject args(&obj, "args");
-    args.AddProperty("name", isolate->debugger_name());
+}
+
+
+TimelineEvent* TimelineEventRecorder::ThreadBlockStartEvent() {
+  // Grab the thread's timeline event block.
+  Thread* thread = Thread::Current();
+  TimelineEventBlock* thread_block = thread->timeline_block();
+  if ((thread_block == NULL) || thread_block->IsFull()) {
+    // If it is full, request a new block.
+    thread_block = GetNewBlock();
+    thread->set_timeline_block(thread_block);
   }
+  if (thread_block == NULL) {
+    // Could not allocate block.
+    return NULL;
+  }
+  ASSERT(thread_block != NULL);
+  ASSERT(!thread_block->IsFull());
+  return thread_block->StartEvent();
 }
 
 
@@ -384,52 +381,69 @@ void TimelineEventRecorder::WriteTo(const char* directory) {
 }
 
 
-intptr_t TimelineEventRingRecorder::SizeForCapacity(intptr_t capacity) {
-  return sizeof(TimelineEvent) * capacity;
-}
-
 
 TimelineEventRingRecorder::TimelineEventRingRecorder(intptr_t capacity)
-    : events_(NULL),
+    : blocks_(NULL),
       event_objects_(Array::null()),
-      cursor_(0),
-      capacity_(capacity) {
-  if (FLAG_trace_timeline) {
-    // 32-bit: 262,144 bytes per isolate.
-    // 64-bit: 393,216 bytes per isolate.
-    // NOTE: Internal isolates (vm and service) do not have a timeline
-    // event buffer.
-    OS::Print("TimelineEventRingRecorder is %" Pd " bytes (%" Pd " events)\n",
-              SizeForCapacity(capacity),
-              capacity);
+      capacity_(capacity),
+      num_blocks_(0),
+      block_cursor_(0) {
+  // Capacity must be a multiple of TimelineEventBlock::kBlockSize
+  ASSERT((capacity % TimelineEventBlock::kBlockSize) == 0);
+  // Allocate blocks array.
+  num_blocks_ = capacity / TimelineEventBlock::kBlockSize;
+  blocks_ =
+      reinterpret_cast<TimelineEventBlock**>(
+          calloc(num_blocks_, sizeof(TimelineEventBlock*)));
+  // Allocate each block.
+  for (intptr_t i = 0; i < num_blocks_; i++) {
+    blocks_[i] = new TimelineEventBlock(i);
   }
-  events_ =
-      reinterpret_cast<TimelineEvent*>(calloc(capacity, sizeof(TimelineEvent)));
+  // Chain blocks together.
+  for (intptr_t i = 0; i < num_blocks_ - 1; i++) {
+    blocks_[i]->set_next(blocks_[i + 1]);
+  }
   const Array& array = Array::Handle(Array::New(capacity, Heap::kOld));
   event_objects_ = array.raw();
 }
 
 
 TimelineEventRingRecorder::~TimelineEventRingRecorder() {
-  for (intptr_t i = 0; i < capacity_; i++) {
-    // Clear any extra data.
-    events_[i].Reset();
+  // Delete all blocks.
+  for (intptr_t i = 0; i < num_blocks_; i++) {
+    TimelineEventBlock* block = blocks_[i];
+    delete block;
   }
-  free(events_);
+  free(blocks_);
   event_objects_ = Array::null();
 }
 
 
 void TimelineEventRingRecorder::PrintJSONEvents(JSONArray* events) const {
-  for (intptr_t i = 0; i < capacity_; i++) {
-    if (events_[i].IsValid()) {
-      events->AddValue(&events_[i]);
+  intptr_t block_offset = FindOldestBlockIndex();
+  if (block_offset == -1) {
+    // All blocks are empty.
+    return;
+  }
+  for (intptr_t block_idx = 0; block_idx < num_blocks_; block_idx++) {
+    TimelineEventBlock* block =
+        blocks_[(block_idx + block_offset) % num_blocks_];
+    if (block->IsEmpty()) {
+      // Skip empty blocks.
+      continue;
+    }
+    for (intptr_t event_idx = 0; event_idx < block->length(); event_idx++) {
+      TimelineEvent* event = block->At(event_idx);
+      if (event->IsValid()) {
+        events->AddValue(event);
+      }
     }
   }
 }
 
 
-void TimelineEventRingRecorder::PrintJSON(JSONStream* js) const {
+void TimelineEventRingRecorder::PrintJSON(JSONStream* js) {
+  MutexLocker ml(&lock_);
   JSONObject topLevel(js);
   topLevel.AddProperty("type", "_Timeline");
   {
@@ -440,9 +454,42 @@ void TimelineEventRingRecorder::PrintJSON(JSONStream* js) const {
 }
 
 
-intptr_t TimelineEventRingRecorder::GetNextIndex() {
-  uintptr_t cursor = AtomicOperations::FetchAndIncrement(&cursor_);
-  return cursor % capacity_;
+TimelineEventBlock* TimelineEventRingRecorder::GetNewBlock() {
+  MutexLocker ml(&lock_);
+  return GetNewBlockLocked();
+}
+
+
+TimelineEventBlock* TimelineEventRingRecorder::GetHeadBlock() {
+  return blocks_[0];
+}
+
+
+TimelineEventBlock* TimelineEventRingRecorder::GetNewBlockLocked() {
+  if (block_cursor_ == num_blocks_) {
+    block_cursor_ = 0;
+  }
+  TimelineEventBlock* block = blocks_[block_cursor_++];
+  block->Reset();
+  return block;
+}
+
+
+intptr_t TimelineEventRingRecorder::FindOldestBlockIndex() const {
+  int64_t earliest_time = kMaxInt64;
+  intptr_t earliest_index = -1;
+  for (intptr_t block_idx = 0; block_idx < num_blocks_; block_idx++) {
+    TimelineEventBlock* block = blocks_[block_idx];
+    if (block->IsEmpty()) {
+      // Skip empty blocks.
+      continue;
+    }
+    if (block->LowerTimeBound() < earliest_time) {
+      earliest_time = block->LowerTimeBound();
+      earliest_index = block_idx;
+    }
+  }
+  return earliest_index;
 }
 
 
@@ -453,22 +500,30 @@ void TimelineEventRingRecorder::VisitObjectPointers(
 
 
 TimelineEvent* TimelineEventRingRecorder::StartEvent(const Object& obj) {
-  ASSERT(events_ != NULL);
-  uintptr_t index = GetNextIndex();
+  TimelineEvent* event = StartEvent();
+  if (event == NULL) {
+    return NULL;
+  }
+  // Grab the thread's timeline event block which contains |event|.
+  Thread* thread = Thread::Current();
+  TimelineEventBlock* thread_block = thread->timeline_block();
+  ASSERT(thread_block != NULL);
+  ASSERT(thread_block->length() > 0);
+  const intptr_t block_index = thread_block->block_index();
+  const intptr_t event_objects_index =
+      block_index * TimelineEventBlock::kBlockSize + thread_block->length() - 1;
   const Array& event_objects = Array::Handle(event_objects_);
-  event_objects.SetAt(index, obj);
-  return &events_[index];
+  event_objects.SetAt(event_objects_index, obj);
+  return event;
 }
 
 
 TimelineEvent* TimelineEventRingRecorder::StartEvent() {
-  ASSERT(events_ != NULL);
-  uintptr_t index = GetNextIndex();
-  return &events_[index];
+  return ThreadBlockStartEvent();
 }
 
+
 void TimelineEventRingRecorder::CompleteEvent(TimelineEvent* event) {
-  ASSERT(events_ != NULL);
   // no-op.
 }
 
@@ -481,7 +536,7 @@ TimelineEventStreamingRecorder::~TimelineEventStreamingRecorder() {
 }
 
 
-void TimelineEventStreamingRecorder::PrintJSON(JSONStream* js) const {
+void TimelineEventStreamingRecorder::PrintJSON(JSONStream* js) {
   JSONObject topLevel(js);
   topLevel.AddProperty("type", "_Timeline");
   {
@@ -489,6 +544,7 @@ void TimelineEventStreamingRecorder::PrintJSON(JSONStream* js) const {
     PrintJSONMeta(&events);
   }
 }
+
 
 void TimelineEventStreamingRecorder::VisitObjectPointers(
     ObjectPointerVisitor* visitor) {
@@ -512,6 +568,204 @@ TimelineEvent* TimelineEventStreamingRecorder::StartEvent() {
 void TimelineEventStreamingRecorder::CompleteEvent(TimelineEvent* event) {
   StreamEvent(event);
   delete event;
+}
+
+
+TimelineEventEndlessRecorder::TimelineEventEndlessRecorder()
+    : head_(NULL),
+      block_index_(0) {
+  GetNewBlock();
+}
+
+
+void TimelineEventEndlessRecorder::PrintJSON(JSONStream* js) {
+  MutexLocker ml(&lock_);
+  JSONObject topLevel(js);
+  topLevel.AddProperty("type", "_Timeline");
+  {
+    JSONArray events(&topLevel, "traceEvents");
+    PrintJSONMeta(&events);
+    PrintJSONEvents(&events);
+  }
+}
+
+
+TimelineEventBlock* TimelineEventEndlessRecorder::GetNewBlock() {
+  MutexLocker ml(&lock_);
+  return GetNewBlockLocked();
+}
+
+
+TimelineEventBlock* TimelineEventEndlessRecorder::GetHeadBlock() {
+  return head_;
+}
+
+
+void TimelineEventEndlessRecorder::VisitObjectPointers(
+    ObjectPointerVisitor* visitor) {
+  // no-op.
+}
+
+
+TimelineEvent* TimelineEventEndlessRecorder::StartEvent(const Object& object) {
+  return StartEvent();
+}
+
+
+TimelineEvent* TimelineEventEndlessRecorder::StartEvent() {
+  return ThreadBlockStartEvent();
+}
+
+
+void TimelineEventEndlessRecorder::CompleteEvent(TimelineEvent* event) {
+  // no-op.
+}
+
+
+TimelineEventBlock* TimelineEventEndlessRecorder::GetNewBlockLocked() {
+  TimelineEventBlock* block = new TimelineEventBlock(block_index_++);
+  block->set_next(head_);
+  head_ = block;
+  return head_;
+}
+
+
+void TimelineEventEndlessRecorder::PrintJSONEvents(JSONArray* events) const {
+  TimelineEventBlock* current = head_;
+  while (current != NULL) {
+    intptr_t length = current->length();
+    for (intptr_t i = 0; i < length; i++) {
+      TimelineEvent* event = current->At(i);
+      if (!event->IsValid()) {
+        continue;
+      }
+      events->AddValue(event);
+    }
+    current = current->next();
+  }
+}
+
+
+void TimelineEventEndlessRecorder::Clear() {
+  TimelineEventBlock* current = head_;
+  while (current != NULL) {
+    TimelineEventBlock* next = current->next();
+    delete current;
+    current = next;
+  }
+  head_ = NULL;
+  block_index_ = 0;
+  Thread* thread = Thread::Current();
+  thread->set_timeline_block(NULL);
+}
+
+
+TimelineEventBlock::TimelineEventBlock(intptr_t block_index)
+    : next_(NULL),
+      length_(0),
+      block_index_(block_index) {
+}
+
+
+TimelineEventBlock::~TimelineEventBlock() {
+  Reset();
+}
+
+
+TimelineEvent* TimelineEventBlock::StartEvent() {
+  ASSERT(!IsFull());
+  return &events_[length_++];
+}
+
+
+ThreadId TimelineEventBlock::thread() const {
+  ASSERT(length_ > 0);
+  return events_[0].thread();
+}
+
+
+int64_t TimelineEventBlock::LowerTimeBound() const {
+  ASSERT(length_ > 0);
+  return events_[0].TimeOrigin();
+}
+
+
+bool TimelineEventBlock::CheckBlock() {
+  if (length() == 0) {
+    return true;
+  }
+
+  // - events in the block come from one thread.
+  ThreadId tid = thread();
+  for (intptr_t i = 0; i < length(); i++) {
+    if (At(i)->thread() != tid) {
+      return false;
+    }
+  }
+
+  // - events have monotonically increasing timestamps.
+  int64_t last_time = LowerTimeBound();
+  for (intptr_t i = 0; i < length(); i++) {
+    if (last_time > At(i)->TimeOrigin()) {
+      return false;
+    }
+    last_time = At(i)->TimeOrigin();
+  }
+
+  return true;
+}
+
+
+void TimelineEventBlock::Reset() {
+  for (intptr_t i = 0; i < kBlockSize; i++) {
+    // Clear any extra data.
+    events_[i].Reset();
+  }
+  length_ = 0;
+}
+
+
+TimelineEventBlockIterator::TimelineEventBlockIterator(
+    TimelineEventRecorder* recorder)
+    : current_(NULL),
+      recorder_(NULL) {
+  Reset(recorder);
+}
+
+
+TimelineEventBlockIterator::~TimelineEventBlockIterator() {
+  Reset(NULL);
+}
+
+
+void TimelineEventBlockIterator::Reset(TimelineEventRecorder* recorder) {
+  // Clear current.
+  current_ = NULL;
+  if (recorder_ != NULL) {
+    // Unlock old recorder.
+    recorder_->lock_.Unlock();
+  }
+  recorder_ = recorder;
+  if (recorder_ == NULL) {
+    return;
+  }
+  // Lock new recorder.
+  recorder_->lock_.Lock();
+  // Queue up first block.
+  current_ = recorder_->GetHeadBlock();
+}
+
+
+bool TimelineEventBlockIterator::HasNext() const {
+  return current_ != NULL;
+}
+
+
+TimelineEventBlock* TimelineEventBlockIterator::Next() {
+  ASSERT(current_ != NULL);
+  TimelineEventBlock* r = current_;
+  current_ = current_->next();
+  return r;
 }
 
 }  // namespace dart

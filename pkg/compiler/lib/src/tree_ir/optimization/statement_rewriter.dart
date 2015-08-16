@@ -491,6 +491,21 @@ class StatementRewriter extends Transformer implements Pass {
     return node;
   }
 
+  Expression visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    if (node.receiverIsNotNull) {
+      _rewriteList(node.arguments);
+      node.receiver = visitExpression(node.receiver);
+    } else {
+      // Impure expressions cannot be propagated across the method lookup,
+      // because it throws when the receiver is null.
+      inEmptyEnvironment(() {
+        _rewriteList(node.arguments);
+      });
+      node.receiver = visitExpression(node.receiver);
+    }
+    return node;
+  }
+
   Expression visitInvokeMethodDirectly(InvokeMethodDirectly node) {
     _rewriteList(node.arguments);
     node.receiver = visitExpression(node.receiver);
@@ -1105,6 +1120,11 @@ class StatementRewriter extends Transformer implements Pass {
   @override
   Statement visitForeignStatement(ForeignStatement node) {
     _rewriteList(node.arguments);
+    return node;
+  }
+
+  @override
+  Expression visitAwait(Await node) {
     return node;
   }
 }

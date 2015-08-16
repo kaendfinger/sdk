@@ -6,17 +6,34 @@ library resolution;
 
 import 'dart:collection' show Queue;
 
+import '../common/backend_api.dart' show
+    Backend;
+import '../common/registry.dart' show
+    Registry;
+import '../common/tasks.dart' show
+    CompilerTask,
+    DeferredAction;
+import '../compiler.dart' show
+    Compiler,
+    isPrivateName;
 import '../compile_time_constants.dart';
+import '../constants/constructors.dart';
 import '../constants/expressions.dart';
 import '../constants/values.dart';
 import '../core_types.dart';
 import '../dart_backend/dart_backend.dart' show DartBackend;
 import '../dart_types.dart';
-import '../dart2jslib.dart' hide DynamicAccess;
+import '../diagnostics/invariant.dart' show
+    invariant;
+import '../diagnostics/messages.dart' show MessageKind;
+import '../diagnostics/spannable.dart' show
+    Spannable;
+import '../enqueue.dart' show
+    ResolutionEnqueuer,
+    WorldImpact;
 import '../tree/tree.dart';
 import '../scanner/scannerlib.dart';
 import '../elements/elements.dart';
-
 import '../elements/modelx.dart' show
     BaseClassElementX,
     BaseFunctionElementX,
@@ -47,14 +64,15 @@ import '../elements/modelx.dart' show
     TypedefElementX,
     VariableElementX,
     VariableList;
-
 import '../ordered_typeset.dart' show OrderedTypeSet, OrderedTypeSetBuilder;
 import '../types/types.dart' show TypeMask;
 import '../util/util.dart';
 import '../universe/universe.dart' show
     CallStructure,
+    Selector,
     SelectorKind,
     UniverseSelector;
+import '../world.dart' show World;
 
 import 'access_semantics.dart';
 import 'class_members.dart' show MembersCreator;

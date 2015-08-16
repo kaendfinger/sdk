@@ -362,6 +362,26 @@ class ApplyBuiltinOperator extends Expression {
   }
 }
 
+class ApplyBuiltinMethod extends Expression {
+  BuiltinMethod method;
+  Expression receiver;
+  List<Expression> arguments;
+
+  bool receiverIsNotNull;
+
+  ApplyBuiltinMethod(this.method, 
+                     this.receiver,
+                     this.arguments,
+                     {this.receiverIsNotNull: false});
+
+  accept(ExpressionVisitor visitor) {
+    return visitor.visitApplyBuiltinMethod(this);
+  }
+  accept1(ExpressionVisitor1 visitor, arg) {
+    return visitor.visitApplyBuiltinMethod(this, arg);
+  }
+}
+
 /// A conditional expression.
 class Conditional extends Expression {
   Expression condition;
@@ -895,6 +915,20 @@ class TypeExpression extends Expression {
   }
 }
 
+class Await extends Expression {
+  Expression input;
+
+  Await(this.input);
+
+  accept(ExpressionVisitor visitor) {
+    return visitor.visitAwait(this);
+  }
+
+  accept1(ExpressionVisitor1 visitor, arg) {
+    return visitor.visitAwait(this, arg);
+  }
+}
+
 abstract class ExpressionVisitor<E> {
   E visitExpression(Expression node) => node.accept(this);
   E visitVariableUse(VariableUse node);
@@ -924,10 +958,12 @@ abstract class ExpressionVisitor<E> {
   E visitCreateInvocationMirror(CreateInvocationMirror node);
   E visitInterceptor(Interceptor node);
   E visitApplyBuiltinOperator(ApplyBuiltinOperator node);
+  E visitApplyBuiltinMethod(ApplyBuiltinMethod node);
   E visitForeignExpression(ForeignExpression node);
   E visitGetLength(GetLength node);
   E visitGetIndex(GetIndex node);
   E visitSetIndex(SetIndex node);
+  E visitAwait(Await node);
 }
 
 abstract class ExpressionVisitor1<E, A> {
@@ -959,10 +995,12 @@ abstract class ExpressionVisitor1<E, A> {
   E visitCreateInvocationMirror(CreateInvocationMirror node, A arg);
   E visitInterceptor(Interceptor node, A arg);
   E visitApplyBuiltinOperator(ApplyBuiltinOperator node, A arg);
+  E visitApplyBuiltinMethod(ApplyBuiltinMethod node, A arg);
   E visitForeignExpression(ForeignExpression node, A arg);
   E visitGetLength(GetLength node, A arg);
   E visitGetIndex(GetIndex node, A arg);
   E visitSetIndex(SetIndex node, A arg);
+  E visitAwait(Await node, A arg);
 }
 
 abstract class StatementVisitor<S> {
@@ -1171,6 +1209,11 @@ abstract class RecursiveVisitor implements StatementVisitor, ExpressionVisitor {
     node.arguments.forEach(visitExpression);
   }
 
+  visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    visitExpression(node.receiver);
+    node.arguments.forEach(visitExpression);
+  }
+
   visitInterceptor(Interceptor node) {
     visitExpression(node.input);
   }
@@ -1195,6 +1238,10 @@ abstract class RecursiveVisitor implements StatementVisitor, ExpressionVisitor {
     visitExpression(node.object);
     visitExpression(node.index);
     visitExpression(node.value);
+  }
+
+  visitAwait(Await node) {
+    visitExpression(node.input);
   }
 }
 
@@ -1416,6 +1463,12 @@ class RecursiveTransformer extends Transformer {
     return node;
   }
 
+  visitApplyBuiltinMethod(ApplyBuiltinMethod node) {
+    node.receiver = visitExpression(node.receiver);
+    _replaceExpressions(node.arguments);
+    return node;
+  }
+
   visitInterceptor(Interceptor node) {
     node.input = visitExpression(node.input);
     return node;
@@ -1436,6 +1489,11 @@ class RecursiveTransformer extends Transformer {
     node.object = visitExpression(node.object);
     node.index = visitExpression(node.index);
     node.value = visitExpression(node.value);
+    return node;
+  }
+
+  visitAwait(Await node) {
+    node.input = visitExpression(node.input);
     return node;
   }
 }

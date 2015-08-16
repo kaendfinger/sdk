@@ -6,18 +6,22 @@ library code_generator;
 
 import 'glue.dart';
 
-import '../../tree_ir/tree_ir_nodes.dart' as tree_ir;
-import '../../tree_ir/tree_ir_nodes.dart' show BuiltinOperator;
-import '../../js/js.dart' as js;
+import '../../closure.dart' show ClosureClassElement;
+import '../../common/codegen.dart' show CodegenRegistry;
+import '../../constants/values.dart';
+import '../../dart_types.dart';
+import '../../diagnostics/invariant.dart' show invariant;
+import '../../diagnostics/spannable.dart' show CURRENT_ELEMENT_SPANNABLE;
 import '../../elements/elements.dart';
 import '../../io/source_information.dart' show SourceInformation;
-import '../../util/maplet.dart';
-import '../../constants/values.dart';
-import '../../dart2jslib.dart';
-import '../../dart_types.dart';
+import '../../js/js.dart' as js;
+import '../../tree_ir/tree_ir_nodes.dart' as tree_ir;
+import '../../tree_ir/tree_ir_nodes.dart' show BuiltinOperator, BuiltinMethod;
 import '../../types/types.dart' show TypeMask;
-import '../../universe/universe.dart' show UniverseSelector;
-import '../../closure.dart' show ClosureClassElement;
+import '../../universe/universe.dart' show
+    Selector,
+    UniverseSelector;
+import '../../util/maplet.dart';
 
 class CodegenBailout {
   final tree_ir.Node node;
@@ -800,6 +804,8 @@ class CodeGenerator extends tree_ir.StatementVisitor
         return new js.Binary('>', args[0], args[1]);
       case BuiltinOperator.NumGe:
         return new js.Binary('>=', args[0], args[1]);
+      case BuiltinOperator.NumShl:
+        return js.js('(# << #) >>> 0', args);
       case BuiltinOperator.StringConcatenate:
         if (args.isEmpty) return js.string('');
         return args.reduce((e1,e2) => new js.Binary('+', e1, e2));
@@ -825,6 +831,26 @@ class CodeGenerator extends tree_ir.StatementVisitor
       case BuiltinOperator.IsNumberAndFloor:
         return js.js("typeof # === 'number' && Math.floor(#) === #", args);
     }
+  }
+
+  /// The JS name of a built-in method.
+  static final Map<BuiltinMethod, String> builtinMethodName = 
+    const <BuiltinMethod, String>{
+      BuiltinMethod.Push: 'push',
+      BuiltinMethod.Pop: 'pop',
+  };
+
+  @override
+  js.Expression visitApplyBuiltinMethod(tree_ir.ApplyBuiltinMethod node) {
+    String name = builtinMethodName[node.method];
+    js.Expression receiver = visitExpression(node.receiver);
+    List<js.Expression> args = visitExpressionList(node.arguments);
+    return js.js('#.#(#)', [receiver, name, args]);
+  }
+
+  @override
+  js.Expression visitAwait(tree_ir.Await node) {
+    return new js.Await(visitExpression(node.input));
   }
 
   visitFunctionExpression(tree_ir.FunctionExpression node) {

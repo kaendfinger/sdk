@@ -6,29 +6,44 @@ library dart2js.ir_builder_task;
 
 import '../closure.dart' as closurelib;
 import '../closure.dart' hide ClosureScope;
+import '../common/tasks.dart' show
+    CompilerTask;
+import '../compiler.dart' show
+    Compiler;
 import '../constants/expressions.dart';
 import '../dart_types.dart';
-import '../dart2jslib.dart';
+import '../diagnostics/invariant.dart' show
+    invariant;
 import '../elements/elements.dart';
-import '../elements/modelx.dart' show SynthesizedConstructorElementX,
-    ConstructorBodyElementX, FunctionSignatureX;
+import '../elements/modelx.dart' show
+    SynthesizedConstructorElementX,
+    ConstructorBodyElementX,
+    FunctionSignatureX;
 import '../io/source_information.dart';
-import '../js_backend/js_backend.dart' show JavaScriptBackend,
+import '../js_backend/js_backend.dart' show
+    JavaScriptBackend,
     SyntheticConstantKind;
+import '../resolution/resolution.dart' show
+    TreeElements;
 import '../resolution/semantic_visitor.dart';
 import '../resolution/operators.dart' as op;
 import '../tree/tree.dart' as ast;
-import '../types/types.dart' show TypeMask;
-import '../universe/universe.dart' show SelectorKind, CallStructure;
-import '../constants/values.dart' show ConstantValue;
+import '../types/types.dart' show
+    TypeMask;
+import '../universe/universe.dart' show
+    CallStructure,
+    Selector,
+    SelectorKind;
+import '../constants/values.dart' show
+    ConstantValue;
 import 'cps_ir_nodes.dart' as ir;
 import 'cps_ir_builder.dart';
-import '../native/native.dart' show NativeBehavior;
+import '../native/native.dart' show
+    NativeBehavior;
 
 // TODO(karlklose): remove.
 import '../js/js.dart' as js show js, Template, Expression, Name;
 import '../ssa/ssa.dart' show TypeMaskFactory;
-import '../types/types.dart' show TypeMask;
 import '../util/util.dart';
 
 import 'package:js_runtime/shared/embedded_names.dart'
@@ -351,6 +366,11 @@ abstract class IrBuilderVisitor extends ast.Visitor<ir.Primitive>
   visitAsyncForIn(ast.AsyncForIn node) {
     // await for is not yet implemented.
     return giveup(node, 'await for');
+  }
+
+  visitAwait(ast.Await node) {
+    ir.Primitive value = visit(node.expression);
+    return irBuilder.buildAwait(value);
   }
 
   visitSyncForIn(ast.SyncForIn node) {
@@ -2147,8 +2167,10 @@ class DartCapturedVariables extends ast.Visitor {
     Element element = elements[node];
     if (Elements.isLocal(element)) {
       LocalElement local = element;
-      if (insideInitializer) {
-        assert(local.isParameter);
+      if (insideInitializer &&
+          local.isParameter &&
+          local.enclosingElement == currentFunction) {
+        assert(local.enclosingElement.isConstructor);
         // Initializers in an initializer-list can communicate via parameters.
         // If a parameter is stored in an initializer list we box it.
         // TODO(sigurdm): Fix this.
@@ -2176,18 +2198,23 @@ class DartCapturedVariables extends ast.Visitor {
   }
 
   visitFunctionExpression(ast.FunctionExpression node) {
-    FunctionElement oldFunction = currentFunction;
+    FunctionElement savedFunction = currentFunction;
     currentFunction = elements[node];
-    if (currentFunction.asyncMarker != AsyncMarker.SYNC) {
-      giveup(node, "cannot handle async/sync*/async* functions");
+
+    if (currentFunction.asyncMarker != AsyncMarker.SYNC &&
+        currentFunction.asyncMarker != AsyncMarker.ASYNC) {
+      giveup(node, "cannot handle sync*/async* functions");
     }
+
+    bool savedInsideInitializer = insideInitializer;
     if (node.initializers != null) {
       insideInitializer = true;
       visit(node.initializers);
-      insideInitializer = false;
     }
+    insideInitializer = false;
     visit(node.body);
-    currentFunction = oldFunction;
+    currentFunction = savedFunction;
+    insideInitializer = savedInsideInitializer;
   }
 
   visitTryStatement(ast.TryStatement node) {

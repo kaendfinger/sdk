@@ -2,9 +2,6 @@
 // for details. All rights reserved. Use of this source code is governed by a
 // BSD-style license that can be found in the LICENSE file.
 
-// This code was auto-generated, is not intended to be edited, and is subject to
-// significant change. Please see the README file for more information.
-
 library engine.java_io_test;
 
 import 'dart:io';
@@ -19,39 +16,29 @@ main() {
   group('JavaFile', () {
     group('toURI', () {
       test('forAbsolute', () {
-        var tempDir = Directory.systemTemp.createTempSync('java_io_test');
-        try {
-          String tempPath = JavaFile.pathContext
-              .normalize(JavaFile.pathContext.absolute(tempDir.path));
-          String path = JavaFile.pathContext.join(tempPath, 'foo.dart');
-          // we use an absolute path
-          expect(JavaFile.pathContext.isAbsolute(path), isTrue);
-          // test that toURI() returns an absolute URI
-          Uri uri = new JavaFile(path).toURI();
-          expect(uri.isAbsolute, isTrue);
-          expect(uri.scheme, 'file');
-        } finally {
-          tempDir.deleteSync(recursive: true);
-        }
+        String tempPath = '/temp';
+        String path = JavaFile.pathContext.join(tempPath, 'foo.dart');
+        // we use an absolute path
+        expect(JavaFile.pathContext.isAbsolute(path), isTrue,
+            reason: '"$path" is not absolute');
+        // test that toURI() returns an absolute URI
+        Uri uri = new JavaFile(path).toURI();
+        expect(uri.isAbsolute, isTrue);
+        expect(uri.scheme, 'file');
       });
       test('forRelative', () {
-        var tempDir = Directory.systemTemp.createTempSync('java_io_test');
-        try {
-          String tempPath = JavaFile.pathContext
-              .normalize(JavaFile.pathContext.absolute(tempDir.path));
-          String path = JavaFile.pathContext.join(tempPath, 'foo.dart');
-          expect(JavaFile.pathContext.isAbsolute(path), isTrue);
-          // prepare a relative path
-          // We should not check that "relPath" is actually relative -
-          // it may be not on Windows, if "temp" is on other disk.
-          String relPath = JavaFile.pathContext.relative(path);
-          // test that toURI() returns an absolute URI
-          Uri uri = new JavaFile(relPath).toURI();
-          expect(uri.isAbsolute, isTrue);
-          expect(uri.scheme, 'file');
-        } finally {
-          tempDir.deleteSync(recursive: true);
-        }
+        String tempPath = '/temp';
+        String path = JavaFile.pathContext.join(tempPath, 'foo.dart');
+        expect(JavaFile.pathContext.isAbsolute(path), isTrue,
+            reason: '"$path" is not absolute');
+        // prepare a relative path
+        // We should not check that "relPath" is actually relative -
+        // it may be not on Windows, if "temp" is on other disk.
+        String relPath = JavaFile.pathContext.relative(path);
+        // test that toURI() returns an absolute URI
+        Uri uri = new JavaFile(relPath).toURI();
+        expect(uri.isAbsolute, isTrue);
+        expect(uri.scheme, 'file');
       });
     });
   });

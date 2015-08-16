@@ -103,8 +103,7 @@ static const char* GetJSONRpcErrorMessage(intptr_t code) {
     case kCannotAddBreakpoint:
       return "Cannot add breakpoint";
     default:
-      UNIMPLEMENTED();
-      return "Unexpected rpc error code";
+      return "Extension error";
   }
 }
 
@@ -154,6 +153,20 @@ static uint8_t* allocator(uint8_t* ptr, intptr_t old_size, intptr_t new_size) {
 }
 
 
+void JSONStream::PostNullReply(Dart_Port port) {
+  const Object& reply = Object::Handle(Object::null());
+  ASSERT(reply.IsNull());
+
+  uint8_t* data = NULL;
+  MessageWriter writer(&data, &allocator, false);
+  writer.WriteMessage(reply);
+  PortMap::PostMessage(new Message(port,
+                                   data,
+                                   writer.BytesWritten(),
+                                   Message::kNormalPriority));
+}
+
+
 void JSONStream::PostReply() {
   Dart_Port port = reply_port();
   ASSERT(port != ILLEGAL_PORT);
@@ -174,6 +187,7 @@ void JSONStream::PostReply() {
     PrintProperty("id", dbl.value());
   } else if (seq_.IsNull()) {
     // JSON-RPC 2.0 says that a request with a null ID shouldn't get a reply.
+    PostNullReply(port);
     return;
   }
   buffer_.AddChar('}');
@@ -532,6 +546,14 @@ void JSONStream::PrintfProperty(const char* name, const char* format, ...) {
   AddEscapedUTF8String(p);
   buffer_.AddChar('"');
   free(p);
+}
+
+
+void JSONStream::Steal(const char** buffer, intptr_t* buffer_length) {
+  ASSERT(buffer != NULL);
+  ASSERT(buffer_length != NULL);
+  *buffer_length = buffer_.length();
+  *buffer = buffer_.Steal();
 }
 
 

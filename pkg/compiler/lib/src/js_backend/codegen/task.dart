@@ -10,11 +10,18 @@ import 'codegen.dart';
 import 'unsugar.dart';
 
 import '../js_backend.dart';
+import '../../common/codegen.dart' show
+    CodegenWorkItem;
+import '../../common/tasks.dart' show
+    CompilerTask;
+import '../../compiler.dart' show
+    Compiler;
 import '../../constants/constant_system.dart';
-import '../../dart2jslib.dart';
 import '../../cps_ir/cps_ir_nodes.dart' as cps;
 import '../../cps_ir/cps_ir_integrity.dart';
 import '../../cps_ir/cps_ir_builder_task.dart';
+import '../../diagnostics/invariant.dart' show
+    DEBUG_MODE;
 import '../../tree_ir/tree_ir_nodes.dart' as tree_ir;
 import '../../types/types.dart' show TypeMask, UnionTypeMask, FlatTypeMask,
     ForwardingTypeMask;
@@ -34,6 +41,7 @@ import '../../cps_ir/cps_ir_nodes_sexpr.dart';
 
 class CpsFunctionCompiler implements FunctionCompiler {
   final ConstantSystem constantSystem;
+  // TODO(karlklose): remove the compiler.
   final Compiler compiler;
   final Glue glue;
   final SourceInformationStrategy sourceInformationFactory;
@@ -55,6 +63,8 @@ class CpsFunctionCompiler implements FunctionCompiler {
         glue = new Glue(compiler);
 
   String get name => 'CPS Ir pipeline';
+
+  JavaScriptBackend get backend => compiler.backend;
 
   /// Generates JavaScript code for `work.element`.
   js.Fun compile(CodegenWorkItem work) {
@@ -213,7 +223,13 @@ class CpsFunctionCompiler implements FunctionCompiler {
   js.Fun compileToJavaScript(CodegenWorkItem work,
                              tree_ir.FunctionDefinition definition) {
     CodeGenerator codeGen = new CodeGenerator(glue, work.registry);
-    return attachPosition(codeGen.buildFunction(definition), work.element);
+    Element element = work.element;
+    js.Fun code = codeGen.buildFunction(definition);
+    if (element is FunctionElement && element.asyncMarker != AsyncMarker.SYNC) {
+      code = backend.rewriteAsync(element, code);
+      work.registry.registerAsyncMarker(element);
+    }
+    return attachPosition(code, element);
   }
 
   Iterable<CompilerTask> get tasks {

@@ -5,6 +5,8 @@
 // Test to ensure that StringBuffer and string interpolation behaves
 // the same and fail fast.
 
+import "package:expect/expect.dart";
+
 class ToStringWrapper {
   final value;
 
@@ -15,9 +17,18 @@ class ToStringWrapper {
 
 wrap(value) => new ToStringWrapper(value);
 
+final bool checkedMode = computeCheckedMode();
+bool computeCheckedMode() {
+  try {
+    var i = 42;
+    String s = i;
+  } on TypeError catch (e) {
+    return true;
+  }
+  return false;
+}
+
 main() {
-  bool checkedMode = false;
-  assert(checkedMode = true);
   interpolate(object) {
     var result;
     if (checkedMode && object != null) {
@@ -25,6 +36,8 @@ main() {
         result = '${wrap(object)}';
       } on TypeError {
         return 'Error';
+      } on ArgumentError {
+        return 'Error';  // Checked mode.
       }
     } else {
       try {
@@ -44,6 +57,8 @@ main() {
         sb = new StringBuffer()..write(wrap(object));
       } on TypeError {
         return 'Error';
+      } on ArgumentError {
+        return 'Error';  // Checked mode.
       }
     } else {
       try {
@@ -63,6 +78,8 @@ main() {
         sb = new StringBuffer(wrap(object));
       } on TypeError {
         return 'Error';
+      } on ArgumentError {
+        return 'Error';  // Checked mode.
       }
     } else {
       try {

@@ -4,24 +4,36 @@
 
 library dart2js.ir_builder;
 
-import '../compile_time_constants.dart' show BackendConstantEnvironment;
+import '../compile_time_constants.dart' show
+    BackendConstantEnvironment;
 import '../constants/constant_system.dart';
-import '../constants/values.dart' show ConstantValue, PrimitiveConstantValue;
+import '../constants/values.dart' show
+    ConstantValue,
+    PrimitiveConstantValue;
 import '../dart_types.dart';
-import '../dart2jslib.dart';
+import '../diagnostics/invariant.dart' show
+    invariant;
 import '../elements/elements.dart';
 import '../io/source_information.dart';
 import '../tree/tree.dart' as ast;
-import '../types/types.dart' show TypeMask;
+import '../types/types.dart' show
+    TypeMask;
 import '../closure.dart' hide ClosureScope;
-import '../universe/universe.dart' show SelectorKind;
+import '../universe/universe.dart' show
+    CallStructure,
+    Selector,
+    SelectorKind;
 import 'cps_ir_nodes.dart' as ir;
-import 'cps_ir_builder_task.dart' show DartCapturedVariables,
+import 'cps_ir_builder_task.dart' show
+    DartCapturedVariables,
     GlobalProgramInformation;
 
-import '../common.dart' as types show TypeMask;
-import '../js/js.dart' as js show Template;
-import '../native/native.dart' show NativeBehavior;
+import '../common.dart' as types show
+    TypeMask;
+import '../js/js.dart' as js show
+    Template;
+import '../native/native.dart' show
+    NativeBehavior;
 
 /// A mapping from variable elements to their compile-time values.
 ///
@@ -2356,11 +2368,17 @@ class IrBuilder {
                                        SourceInformation sourceInformation) {
     List<ir.Primitive> arguments = <ir.Primitive>[];
     for (ClosureFieldElement field in classElement.closureFields) {
-      // Captured 'this' is not available as a local in the current environment,
-      // so treat that specially.
-      ir.Primitive value = field.local is ThisLocal
-          ? buildThis()
-          : environment.lookup(field.local);
+      // Captured 'this' and type variables are not always available as locals
+      // in the environment, so treat those specially.
+      ir.Primitive value;
+      if (field.local is ThisLocal) {
+        value = buildThis();
+      } else if (field.local is TypeVariableLocal) {
+        TypeVariableLocal variable = field.local;
+        value = buildTypeVariableAccess(variable.typeVariable);
+      } else {
+        value = environment.lookup(field.local);
+      }
       arguments.add(value);
     }
     return addPrimitive(new ir.CreateInstance(
@@ -2704,6 +2722,10 @@ class IrBuilder {
         program.stringifyFunction,
         new CallStructure.unnamed(1),
         <ir.Primitive>[value]);
+  }
+
+  ir.Node buildAwait(ir.Primitive value) {
+    return _continueWithExpression((k) => new ir.Await(value, k));
   }
 }
 

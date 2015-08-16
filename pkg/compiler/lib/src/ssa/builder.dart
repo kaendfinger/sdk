@@ -5,15 +5,17 @@
 part of ssa;
 
 class SsaFunctionCompiler implements FunctionCompiler {
-  SsaCodeGeneratorTask generator;
-  SsaBuilderTask builder;
-  SsaOptimizerTask optimizer;
+  final SsaCodeGeneratorTask generator;
+  final SsaBuilderTask builder;
+  final SsaOptimizerTask optimizer;
+  final JavaScriptBackend backend;
 
   SsaFunctionCompiler(JavaScriptBackend backend,
                       SourceInformationStrategy sourceInformationFactory)
       : generator = new SsaCodeGeneratorTask(backend, sourceInformationFactory),
         builder = new SsaBuilderTask(backend, sourceInformationFactory),
-        optimizer = new SsaOptimizerTask(backend);
+        optimizer = new SsaOptimizerTask(backend),
+        backend = backend;
 
   /// Generates JavaScript code for `work.element`.
   /// Using the ssa builder, optimizer and codegenerator.
@@ -23,55 +25,7 @@ class SsaFunctionCompiler implements FunctionCompiler {
     Element element = work.element;
     js.Expression result = generator.generateCode(work, graph);
     if (element is FunctionElement) {
-      JavaScriptBackend backend = builder.backend;
-
-      AsyncRewriterBase rewriter = null;
-      js.Name name = backend.namer.methodPropertyName(element);
-      if (element.asyncMarker == AsyncMarker.ASYNC) {
-        rewriter = new AsyncRewriter(
-            backend.compiler,
-            backend.compiler.currentElement,
-            asyncHelper:
-                backend.emitter.staticFunctionAccess(backend.getAsyncHelper()),
-            newCompleter: backend.emitter.staticFunctionAccess(
-                backend.getCompleterConstructor()),
-            safeVariableName: backend.namer.safeVariablePrefixForAsyncRewrite,
-            bodyName: backend.namer.deriveAsyncBodyName(name));
-      } else if (element.asyncMarker == AsyncMarker.SYNC_STAR) {
-        rewriter = new SyncStarRewriter(
-            backend.compiler,
-            backend.compiler.currentElement,
-            endOfIteration: backend.emitter.staticFunctionAccess(
-                backend.getEndOfIteration()),
-            newIterable: backend.emitter.staticFunctionAccess(
-                backend.getSyncStarIterableConstructor()),
-            yieldStarExpression: backend.emitter.staticFunctionAccess(
-                backend.getYieldStar()),
-            uncaughtErrorExpression: backend.emitter.staticFunctionAccess(
-                backend.getSyncStarUncaughtError()),
-            safeVariableName: backend.namer.safeVariablePrefixForAsyncRewrite,
-            bodyName: backend.namer.deriveAsyncBodyName(name));
-      }
-      else if (element.asyncMarker == AsyncMarker.ASYNC_STAR) {
-        rewriter = new AsyncStarRewriter(
-            backend.compiler,
-            backend.compiler.currentElement,
-            asyncStarHelper: backend.emitter.staticFunctionAccess(
-                backend.getAsyncStarHelper()),
-            streamOfController: backend.emitter.staticFunctionAccess(
-                backend.getStreamOfController()),
-            newController: backend.emitter.staticFunctionAccess(
-                backend.getASyncStarControllerConstructor()),
-            safeVariableName: backend.namer.safeVariablePrefixForAsyncRewrite,
-            yieldExpression: backend.emitter.staticFunctionAccess(
-                backend.getYieldSingle()),
-            yieldStarExpression: backend.emitter.staticFunctionAccess(
-                backend.getYieldStar()),
-            bodyName: backend.namer.deriveAsyncBodyName(name));
-      }
-      if (rewriter != null) {
-        result = rewriter.rewrite(result);
-      }
+      result = backend.rewriteAsync(element, result);
     }
     return result;
   }
@@ -1808,6 +1762,7 @@ class SsaBuilder extends ast.Visitor
     stack = <HInstruction>[];
 
     insertTraceCall(function);
+    insertCoverageCall(function);
   }
 
   void restoreState(AstInliningState state) {
@@ -2446,10 +2401,11 @@ class SsaBuilder extends ast.Visitor
     }
 
     insertTraceCall(element);
+    insertCoverageCall(element);
   }
 
   insertTraceCall(Element element) {
-    if (JavaScriptBackend.TRACE_CALLS) {
+    if (JavaScriptBackend.TRACE_METHOD == 'console') {
       if (element == backend.traceHelper) return;
       n(e) => e == null ? '' : e.name;
       String name = "${n(element.library)}:${n(element.enclosingClass)}."
@@ -2457,6 +2413,18 @@ class SsaBuilder extends ast.Visitor
       HConstant nameConstant = addConstantString(name);
       add(new HInvokeStatic(backend.traceHelper,
                             <HInstruction>[nameConstant],
+                            backend.dynamicType));
+    }
+  }
+
+  insertCoverageCall(Element element) {
+    if (JavaScriptBackend.TRACE_METHOD == 'post') {
+      if (element == backend.traceHelper) return;
+      // TODO(sigmund): create a better uuid for elements.
+      HConstant idConstant = graph.addConstantInt(element.hashCode, compiler);
+      HConstant nameConstant = addConstantString(element.name);
+      add(new HInvokeStatic(backend.traceHelper,
+                            <HInstruction>[idConstant, nameConstant],
                             backend.dynamicType));
     }
   }
@@ -3622,7 +3590,11 @@ class SsaBuilder extends ast.Visitor
                                                   {Selector selector,
                                                    TypeMask mask,
                                                    ast.Node location}) {
-    assert(send == null || Elements.isInstanceSend(send, elements));
+    assert(invariant(
+        send == null ? location : send,
+        send == null || Elements.isInstanceSend(send, elements),
+        message: "Unexpected instance setter"
+                 "${send != null ? " element: ${elements[send]}" : ""}"));
     if (selector == null) {
       assert(send != null);
       selector = elements.getSelector(send);

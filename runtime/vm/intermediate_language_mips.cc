@@ -1012,7 +1012,8 @@ void NativeCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
     }
 #endif
   }
-  __ LoadImmediate(T5, entry);
+  ExternalLabel label(entry);
+  __ LoadExternalLabel(T5, &label, kNotPatchable);
   __ LoadImmediate(A1, argc_tag);
   compiler->GenerateCall(token_pos(),
                          *stub_entry,
@@ -1040,8 +1041,8 @@ void StringFromCharCodeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
 
   __ Comment("StringFromCharCodeInstr");
 
-  __ LoadImmediate(result,
-                   reinterpret_cast<uword>(Symbols::PredefinedAddress()));
+  ExternalLabel label(reinterpret_cast<uword>(Symbols::PredefinedAddress()));
+  __ LoadExternalLabel(result, &label, kNotPatchable);
   __ AddImmediate(result, Symbols::kNullCharCodeSymbolOffset * kWordSize);
   __ sll(TMP, char_code, 1);  // Char code is a smi.
   __ addu(TMP, TMP, result);
@@ -2246,6 +2247,9 @@ void CreateArrayInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 
   __ Bind(&slow_path);
+  const Code& stub = Code::Handle(compiler->isolate(),
+                                  StubCode::AllocateArray_entry()->code());
+  compiler->AddStubCallTarget(stub);
   compiler->GenerateCall(token_pos(),
                          *StubCode::AllocateArray_entry(),
                          RawPcDescriptors::kOther,
@@ -2495,6 +2499,9 @@ class AllocateContextSlowPath : public SlowPathCode {
     compiler->SaveLiveRegisters(locs);
 
     __ LoadImmediate(T1, instruction_->num_context_variables());
+    const Code& stub = Code::Handle(compiler->isolate(),
+                                    StubCode::AllocateContext_entry()->code());
+    compiler->AddStubCallTarget(stub);
     compiler->GenerateCall(instruction_->token_pos(),
                            *StubCode::AllocateContext_entry(),
                            RawPcDescriptors::kOther,

@@ -1,3 +1,19 @@
+## 1.13.0
+
+* `dart:core`
+  * `Uri` added `removeFragment` method.
+  * `String.allMatches` (implementing `Pattern.allMatches`) is now lazy,
+    as all `allMatches` implementations are intended to be.
+* `dart:io`
+  * `HttpClient` no longer sends URI fragments in the requeust. This is not
+    allowed by the HTTP protocol.
+    The `HttpServer` still gracefully receives fragments, but discards them
+    before delivering the request.
+* `dart:async`
+  * `StreamController` added getters for the `onListen`, `onPause`, `onResume`
+    and `onCancel` callbacks.
+
+
 ## 1.12.0
 
 ### Core library changes
@@ -29,11 +45,30 @@
   * Change stdout/stderr to binary mode on Windows.
     [4205b29](https://github.com/dart-lang/sdk/commit/4205b2997e01f2cea8e2f44c6f46ed6259ab7277)
 
+* `dart:mirrors`
+  * `InstanceMirror.delegate` moved up to `ObjectMirror`.
+
 ### Tool changes
 
 * Pub
 
+  * **Breaking:** various commands that previously ran `pub get` implicitly no
+    longer do so. Instead, they merely check to make sure the ".packages" file
+    is newer than the pubspec and the lock file, and fail if it's not.
+
+  * Added support for `--verbosity=error` and `--verbosity=warning`.
+
+  * `pub serve` now collapses multiple GET requests into a single line of
+    output. For full output, use `--verbose`.
+
+  * `pub deps` has improved formatting for circular dependencies on the
+    entrypoint package.
+
   * `pub run` and `pub global run`
+
+    * **Breaking:** to match the behavior of the Dart VM, executables no longer
+      run in checked mode by default. A `--checked` flag has been added to run
+      them in checked mode manually.
 
     * Faster start time for executables that don't import transformed code.
 
@@ -177,7 +212,7 @@
 
 * This is the first release that does not include the Eclipse-based
   **Dart Editor**.
-  See [dartlang.org/tools](https://www.dartlang.org/tools/]) for alternatives.
+  See [dartlang.org/tools](https://www.dartlang.org/tools/) for alternatives.
 * This is the last release that ships the (unsupported)
   dart2dart (aka `dart2js --output-type=dart`) utility as part
   of dart2js

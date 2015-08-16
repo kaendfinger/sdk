@@ -421,13 +421,6 @@ static void PushArgumentsArray(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t, DeoptimizeCopyFrame,
-                           intptr_t deopt_reason,
-                           uword saved_registers_address);
-
-DECLARE_LEAF_RUNTIME_ENTRY(void, DeoptimizeFillFrame, uword last_fp);
-
-
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -957,6 +950,8 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
     __ LoadImmediate(T0, ~((kObjectAlignment) - 1));
     __ and_(T2, T2, T0);
 
+    __ MaybeTraceAllocation(kContextCid, T4, &slow_case,
+                            /* inline_isolate = */ false);
     // Now allocate the object.
     // T1: number of context variables.
     // T2: object size.
@@ -1057,9 +1052,6 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(void, StoreBufferBlockProcess, Isolate* isolate);
-
-
 // Helper stub to implement Assembler::StoreIntoObject.
 // Input parameters:
 //   T0: Address (i.e. object) being stored into.
@@ -1151,8 +1143,9 @@ void StubCode::GenerateAllocationStubForClass(
     __ lw(T1, Address(SP, 0 * kWordSize));
     // T1: type arguments.
   }
+  Isolate* isolate = Isolate::Current();
   if (FLAG_inline_alloc && Heap::IsAllocatableInNewSpace(instance_size) &&
-      !cls.trace_allocation()) {
+      !cls.TraceAllocation(isolate)) {
     Label slow_case;
     // Allocate the object and update top to point to
     // next object start and initialize the allocated object.
@@ -2088,12 +2081,6 @@ void StubCode::GenerateOptimizeFunctionStub(Assembler* assembler) {
   __ LeaveStubFrameAndReturn(T0);
   __ break_(0);
 }
-
-
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t,
-                           BigintCompare,
-                           RawBigint* left,
-                           RawBigint* right);
 
 
 // Does identical check (object references are equal or not equal) with special

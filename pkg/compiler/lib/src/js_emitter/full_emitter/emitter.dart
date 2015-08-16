@@ -26,6 +26,11 @@ import '../../constants/values.dart';
 
 import '../../deferred_load.dart' show OutputUnit;
 
+import '../../diagnostics/messages.dart' show MessageKind;
+
+import '../../diagnostics/spannable.dart' show
+    NO_LOCATION_SPANNABLE;
+
 import '../../elements/elements.dart' show
     ConstructorBodyElement,
     ElementKind,
@@ -78,7 +83,6 @@ import '../../util/uri_extras.dart' show
     relativize;
 
 import '../../util/util.dart' show
-    NO_LOCATION_SPANNABLE,
     equalElements;
 
 part 'class_builder.dart';

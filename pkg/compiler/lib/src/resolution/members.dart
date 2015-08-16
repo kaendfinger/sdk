@@ -1340,7 +1340,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       }
     } else {
       ResolutionResult expressionResult = visitExpression(expression);
-      semantics = new DynamicAccess.dynamicProperty(expression);
+      semantics = const DynamicAccess.dynamicProperty();
       registry.registerDynamicInvocation(new UniverseSelector(selector, null));
 
       if (expressionResult.isConstant) {
@@ -1386,7 +1386,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     Node expression = node.receiver;
     ResolutionResult result = visitExpression(expression);
     registry.registerSendStructure(node,
-        new NotStructure(new DynamicAccess.dynamicProperty(expression)));
+        new NotStructure(const DynamicAccess.dynamicProperty()));
 
     if (result.isConstant) {
       ConstantExpression expressionConstant = result.constant;
@@ -1516,7 +1516,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       ResolutionResult leftResult = visitExpression(left);
       ResolutionResult rightResult = visitExpression(right);
       registry.registerDynamicInvocation(new UniverseSelector(selector, null));
-      semantics = new DynamicAccess.dynamicProperty(left);
+      semantics = const DynamicAccess.dynamicProperty();
 
       if (leftResult.isConstant && rightResult.isConstant) {
         bool isValidConstant;
@@ -1650,7 +1650,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     registry.setSelector(node, selector);
     registry.registerDynamicInvocation(new UniverseSelector(selector, null));
     registry.registerSendStructure(node,
-        new InvokeStructure(new AccessSemantics.expression(), selector));
+        new InvokeStructure(const DynamicAccess.expression(), selector));
     return const NoneResult();
   }
 
@@ -1685,14 +1685,22 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
   /// Handle access of a property of [name] on `this`, like `this.name` and
   /// `this.name()`, or `name` and `name()` in instance context.
   ResolutionResult handleThisPropertyAccess(Send node, Name name) {
-    AccessSemantics semantics = new AccessSemantics.thisProperty();
+    AccessSemantics semantics = const DynamicAccess.thisProperty();
     return handleDynamicAccessSemantics(node, name, semantics);
+  }
+
+  /// Handle update of a property of [name] on `this`, like `this.name = b` and
+  /// `this.name++`, or `name = b` and `name++` in instance context.
+  ResolutionResult handleThisPropertyUpdate(
+      SendSet node, Name name, Element element) {
+    AccessSemantics semantics = const DynamicAccess.thisProperty();
+    return handleDynamicUpdateSemantics(node, name, element, semantics);
   }
 
   /// Handle access on `this`, like `this()` and `this` when it is parsed as a
   /// [Send] node.
   ResolutionResult handleThisAccess(Send node) {
-    AccessSemantics accessSemantics = new AccessSemantics.thisAccess();
+    AccessSemantics accessSemantics = const DynamicAccess.thisAccess();
     if (node.isCall) {
       CallStructure callStructure =
           resolveArguments(node.argumentsNode).callStructure;
@@ -1889,7 +1897,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     // TODO(johnniwinther): Add an [AccessSemantics] for unresolved static
     // member access.
     return handleErroneousAccess(
-        node, name, error, new StaticAccess.unresolved(error));
+        node, name, new StaticAccess.unresolved(error));
   }
 
   /// Handle qualified access of an instance member, like `a.b` or `a.b()` where
@@ -1912,7 +1920,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     // TODO(johnniwinther): Add an [AccessSemantics] for statically accessed
     // instance members.
     return handleErroneousAccess(
-        node, name, error, new StaticAccess.unresolved(error));
+        node, name, new StaticAccess.unresolved(error));
   }
 
   /// Handle qualified access of an inaccessible private static class member,
@@ -1928,7 +1936,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     // TODO(johnniwinther): Add an [AccessSemantics] for unresolved static
     // member access.
     return handleErroneousAccess(
-        node, name, error, new StaticAccess.unresolved(error));
+        node, name, new StaticAccess.unresolved(error));
   }
 
   /// Handle qualified access to a static member, like `a.b` or `a.b()` where
@@ -2049,6 +2057,27 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     }
   }
 
+  /// Handle access to a constant type literal of [type].
+  // TODO(johnniwinther): Remove [name] when [Selector] is not required for the
+  // the [GetStructure].
+  // TODO(johnniwinther): Remove [element] when it is no longer needed for
+  // evaluating constants.
+  ResolutionResult handleConstantTypeLiteralUpdate(
+      SendSet node,
+      Name name,
+      TypeDeclarationElement element,
+      DartType type,
+      ConstantAccess semantics) {
+    ErroneousElement error =
+        reportAndCreateErroneousElement(
+            node.selector, name.text, MessageKind.ASSIGNING_TYPE, const {});
+    registry.useElement(node, error);
+    registry.registerTypeLiteral(node, type);
+    registry.registerThrowNoSuchMethod();
+
+    return handleUpdate(node, name, semantics);
+  }
+
   /// Handle access to a type literal of a typedef. Like `F` or
   /// `F()` where 'F' is typedef.
   ResolutionResult handleTypedefTypeLiteralAccess(
@@ -2072,6 +2101,20 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         node.isCall ? coreTypes.typeType : type);
     AccessSemantics semantics = new ConstantAccess.dynamicTypeLiteral(constant);
     return handleConstantTypeLiteralAccess(
+        node, const PublicName('dynamic'), compiler.typeClass, type, semantics);
+  }
+
+  /// Handle update to a type literal of the type 'dynamic'. Like `dynamic++` or
+  /// `dynamic = 0`.
+  ResolutionResult handleDynamicTypeLiteralUpdate(SendSet node) {
+    DartType type = const DynamicType();
+    ConstantExpression constant =
+        new TypeConstantExpression(const DynamicType());
+    AccessSemantics semantics = new ConstantAccess.dynamicTypeLiteral(constant);
+    // TODO(johnniwinther): Remove this when all constants are evaluated.
+    compiler.resolver.constantCompiler.evaluate(constant);
+
+    return handleConstantTypeLiteralUpdate(
         node, const PublicName('dynamic'), compiler.typeClass, type, semantics);
   }
 
@@ -2168,7 +2211,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
           {'prefix': name},
           isError: true);
       return handleErroneousAccess(
-          node, name, error, new StaticAccess.invalid(error));
+          node, name, new StaticAccess.invalid(error));
     }
     if (prefix.isDeferred) {
       // TODO(23998): Remove this when deferred access is detected
@@ -2223,11 +2266,43 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     return const NoneResult();
   }
 
+  /// Handle dynamic update of [semantics].
+  ResolutionResult handleDynamicUpdateSemantics(
+      SendSet node, Name name, Element element, AccessSemantics semantics) {
+    Selector getterSelector =
+        new Selector(SelectorKind.GETTER, name, CallStructure.NO_ARGS);
+    Selector setterSelector =
+        new Selector(SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
+    registry.registerDynamicSetter(
+        new UniverseSelector(setterSelector, null));
+    if (node.isComplex) {
+      registry.registerDynamicGetter(
+          new UniverseSelector(getterSelector, null));
+    }
+
+    // TODO(23998): Remove these when elements are only accessed through the
+    // send structure.
+    Element getter = element;
+    Element setter = element;
+    if (element != null && element.isAbstractField) {
+      AbstractFieldElement abstractField = element;
+      getter = abstractField.getter;
+      setter = abstractField.setter;
+    }
+    if (setter != null) {
+      registry.useElement(node, setter);
+      if (getter != null && node.isComplex) {
+        registry.useElement(node.selector, getter);
+      }
+    }
+
+    return handleUpdate(node, name, semantics);
+  }
+
   /// Handle dynamic property access, like `a.b` or `a.b()` where `a` is not a
   /// prefix or class.
   ResolutionResult handleDynamicPropertyAccess(Send node, Name name) {
-    AccessSemantics semantics =
-        new DynamicAccess.dynamicProperty(node.receiver);
+    AccessSemantics semantics = const DynamicAccess.dynamicProperty();
     return handleDynamicAccessSemantics(node, name, semantics);
   }
 
@@ -2235,8 +2310,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
   ResolutionResult handleConditionalAccess(Send node, Name name) {
     Node receiver = node.receiver;
     visitConditionalPrefix(receiver);
-    AccessSemantics semantics =
-        new DynamicAccess.ifNotNullProperty(receiver);
+    AccessSemantics semantics = const DynamicAccess.ifNotNullProperty();
     return handleDynamicAccessSemantics(node, name, semantics);
   }
 
@@ -2248,7 +2322,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         MessageKind.THIS_PROPERTY, {},
         isError: true);
     AccessSemantics accessSemantics = new StaticAccess.invalid(error);
-    return handleErroneousAccess(node, name, error, accessSemantics);
+    return handleErroneousAccess(node, name, accessSemantics);
   }
 
   /// Handle a qualified [Send], that is where the receiver is non-null, like
@@ -2285,13 +2359,13 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         Send node, Name name, Element element) {
     // TODO(johnniwinther): Support unresolved top level access as an
     // [AccessSemantics].
-    AccessSemantics accessSemantics = new StaticAccess.unresolved(element);
-    return handleErroneousAccess(node, name, element, accessSemantics);
+    AccessSemantics semantics = new StaticAccess.unresolved(element);
+    return handleErroneousAccess(node, name, semantics);
   }
 
-  /// Handle erroneous access of [element] of the given [accessSemantics].
+  /// Handle erroneous access of [element] of the given [semantics].
   ResolutionResult handleErroneousAccess(
-      Send node, Name name, Element element, AccessSemantics accessSemantics) {
+      Send node, Name name, AccessSemantics semantics) {
     SendStructure sendStructure;
     Selector selector;
     if (node.isCall) {
@@ -2300,19 +2374,19 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       selector = new Selector(SelectorKind.CALL, name, callStructure);
       registry.registerDynamicInvocation(
           new UniverseSelector(selector, null));
-      sendStructure = new InvokeStructure(accessSemantics, selector);
+      sendStructure = new InvokeStructure(semantics, selector);
     } else {
       assert(invariant(node, node.isPropertyAccess));
       selector = new Selector(
           SelectorKind.GETTER, name, CallStructure.NO_ARGS);
       registry.registerDynamicGetter(
           new UniverseSelector(selector, null));
-      sendStructure = new GetStructure(accessSemantics, selector);
+      sendStructure = new GetStructure(semantics, selector);
     }
     // TODO(23998): Remove this when all information goes through
     // the [SendStructure].
     registry.setSelector(node, selector);
-    registry.useElement(node, element);
+    registry.useElement(node, semantics.element);
     registry.registerSendStructure(node, sendStructure);
     return const NoneResult();
   }
@@ -2332,8 +2406,27 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     registry.registerThrowNoSuchMethod();
 
     // TODO(johnniwinther): Support ambiguous access as an [AccessSemantics].
+    AccessSemantics semantics = new StaticAccess.unresolved(error);
+    return handleErroneousAccess(node, name, semantics);
+  }
+
+  /// Handle update to an ambiguous element, that is, a name imported twice.
+  ResolutionResult handleAmbiguousUpdate(
+      SendSet node,
+      Name name,
+      AmbiguousElement element) {
+
+    ErroneousElement error = reportAndCreateErroneousElement(
+        node,
+        name.text,
+        element.messageKind,
+        element.messageArguments);
+    element.diagnose(enclosingElement, compiler);
+    registry.registerThrowNoSuchMethod();
+
+    // TODO(johnniwinther): Support ambiguous access as an [AccessSemantics].
     AccessSemantics accessSemantics = new StaticAccess.unresolved(error);
-    return handleErroneousAccess(node, name, error, accessSemantics);
+    return handleUpdate(node, name, accessSemantics);
   }
 
   /// Handle access of an instance [member] from a non-instance context.
@@ -2349,8 +2442,8 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
 
     // TODO(johnniwinther): Support static instance access as an
     // [AccessSemantics].
-    AccessSemantics accessSemantics = new StaticAccess.unresolved(error);
-    return handleErroneousAccess(node, name, error, accessSemantics);
+    AccessSemantics semantics = new StaticAccess.unresolved(error);
+    return handleErroneousAccess(node, name, semantics);
   }
 
   /// Handle access of a parameter, local variable or local function.
@@ -2597,7 +2690,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       // [isErroneous] to `true`.
       assert(invariant(node, element is! ErroneousElement,
           message: "Unexpected erroneous element $element."));
-      return handleErroneousAccess(node, name, element,
+      return handleErroneousAccess(node, name,
           new StaticAccess.unresolved(element));
     }
     if (element.isInstanceMember) {
@@ -2624,6 +2717,28 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       return handleStaticOrTopLevelAccess(node, name, element);
     }
     return internalError(node, "Unexpected resolved send: $element");
+  }
+
+  /// Handle update to resolved [element].
+  ResolutionResult handleResolvedSendSet(
+      SendSet node, Name name, Element element) {
+    if (element.isAmbiguous) {
+      return handleAmbiguousUpdate(node, name, element);
+    }
+    if (element.isErroneous) {
+      // This handles elements with parser errors.
+      // TODO(johnniwinther): Elements with parse error should not set
+      // [isErroneous] to `true`.
+      assert(invariant(node, element is! ErroneousElement,
+          message: "Unexpected erroneous element $element."));
+      return handleUpdate(node, name,new StaticAccess.unresolved(element));
+    }
+    if (element.isInstanceMember) {
+      if (inInstanceContext) {
+        return handleThisPropertyUpdate(node, name, element);
+      }
+    }
+    return oldVisitSendSet(node);
   }
 
   /// Handle an unqualified [Send], that is where the `node.receiver` is null,
@@ -2660,6 +2775,32 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       }
     } else {
       return handleResolvedSend(node, name, element);
+    }
+  }
+
+  /// Handle an unqualified [SendSet], that is where the `node.receiver` is
+  /// null, like `a = b`, `a++`, and `a += b`.
+  ResolutionResult handleUnqualifiedSendSet(SendSet node) {
+    Identifier selector = node.selector.asIdentifier();
+    String text = selector.source;
+    Name name = new Name(text, enclosingElement.library);
+    Element element = lookupInScope(compiler, node, scope, text);
+    if (element == null) {
+      if (text == 'dynamic') {
+        // `dynamic = b`, `dynamic++`, or `dynamic += b` where 'dynamic' is not
+        // declared in the current scope.
+        return handleDynamicTypeLiteralUpdate(node);
+      } else if (inInstanceContext) {
+        // Left-hand side is implicitly `this.name`.
+        return handleThisPropertyUpdate(node, name, null);
+      } else {
+        // Create [ErroneousElement] for unresolved access.
+        ErroneousElement error = reportCannotResolve(node, text);
+        return handleUpdate(node, name, new StaticAccess.unresolved(error));
+      }
+      return oldVisitSendSet(node);
+    } else {
+      return handleResolvedSendSet(node, name, element);
     }
   }
 
@@ -2728,7 +2869,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     if (node.isPrefix || node.isPostfix) {
       // `a[b]++` or `++a[b]`.
       IncDecOperator operator = IncDecOperator.parse(operatorText);
-      AccessSemantics semantics = new DynamicAccess.dynamicProperty(receiver);
+      AccessSemantics semantics = const DynamicAccess.dynamicProperty();
       Selector getterSelector = new Selector.index();
       Selector setterSelector = new Selector.indexSet();
       Selector operatorSelector =
@@ -2761,7 +2902,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       AssignmentOperator operator = AssignmentOperator.parse(operatorText);
       if (operator.kind == AssignmentOperatorKind.ASSIGN) {
         // `a[b] = c`.
-        AccessSemantics semantics = new DynamicAccess.dynamicProperty(receiver);
+        AccessSemantics semantics = const DynamicAccess.dynamicProperty();
         Selector setterSelector = new Selector.indexSet();
 
         // TODO(23998): Remove this when selectors are only accessed
@@ -2776,7 +2917,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         return const NoneResult();
       } else {
         // `a[b] += c`.
-        AccessSemantics semantics = new DynamicAccess.dynamicProperty(receiver);
+        AccessSemantics semantics = const DynamicAccess.dynamicProperty();
         Selector getterSelector = new Selector.index();
         Selector setterSelector = new Selector.indexSet();
         Selector operatorSelector =
@@ -2917,58 +3058,29 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
     String text = selector.source;
     Name name = new Name(text, enclosingElement.library);
     String operatorText = node.assignmentOperator.source;
+    Selector getterSelector = new Selector(
+        SelectorKind.GETTER, name, CallStructure.NO_ARGS);
+    Selector setterSelector = new Selector(
+        SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
     AccessSemantics semantics = checkSuperAccess(node);
     if (node.isPrefix || node.isPostfix) {
       // `super.a++` or `++super.a`.
-      IncDecOperator operator = IncDecOperator.parse(operatorText);
-      Selector getterSelector =
-          new Selector(SelectorKind.GETTER, name, CallStructure.NO_ARGS);
-      Selector setterSelector =
-          new Selector(SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
-      Selector operatorSelector =
-          new Selector.binaryOperator(operator.selectorName);
-
-      // TODO(23998): Remove these when selectors are only accessed
-      // through the send structure.
-      registry.setGetterSelectorInComplexSendSet(node, getterSelector);
-      registry.setSelector(node, setterSelector);
-      registry.setOperatorSelectorInComplexSendSet(node, operatorSelector);
-
       if (semantics == null) {
         semantics = computeSuperAccessSemanticsForSelectors(
             node, getterSelector, setterSelector);
-
         registry.registerStaticInvocation(semantics.getter);
         registry.registerStaticInvocation(semantics.setter);
-
-        // TODO(23998): Remove these when elements are only accessed
-        // through the send structure.
-        registry.useElement(node, semantics.setter);
-        registry.useElement(node.selector, semantics.getter);
       }
-      registry.registerDynamicInvocation(
-          new UniverseSelector(operatorSelector, null));
-
-      SendStructure sendStructure = node.isPrefix
-          ? new PrefixStructure(
-              semantics, operator, getterSelector, setterSelector)
-          : new PostfixStructure(
-              semantics, operator, getterSelector, setterSelector);
-      registry.registerSendStructure(node, sendStructure);
-      return const NoneResult();
+      return handleUpdate(node, name, semantics);
     } else {
-      Node rhs = node.arguments.head;
-      visitExpression(rhs);
-
       AssignmentOperator operator = AssignmentOperator.parse(operatorText);
       if (operator.kind == AssignmentOperatorKind.ASSIGN) {
         // `super.a = b`.
-        Selector setterSelector = new Selector(
-            SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
         if (semantics == null) {
           semantics =
               computeSuperAccessSemanticsForSelector(
                   node, setterSelector, alternateName: name);
+          registry.registerStaticInvocation(semantics.setter);
           switch (semantics.kind) {
             case AccessKind.SUPER_FINAL_FIELD:
               compiler.reportWarning(
@@ -2976,6 +3088,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
                   MessageKind.ASSIGNING_FINAL_FIELD_IN_SUPER,
                   {'name': name,
                    'superclassName': semantics.setter.enclosingClass.name});
+              // TODO(johnniwinther): This shouldn't be needed.
               registry.registerDynamicInvocation(
                   new UniverseSelector(setterSelector, null));
               registry.registerSuperNoSuchMethod();
@@ -2985,6 +3098,7 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
                   node, MessageKind.ASSIGNING_METHOD_IN_SUPER,
                   {'name': name,
                    'superclassName': semantics.setter.enclosingClass.name});
+              // TODO(johnniwinther): This shouldn't be needed.
               registry.registerDynamicInvocation(
                   new UniverseSelector(setterSelector, null));
               registry.registerSuperNoSuchMethod();
@@ -2993,11 +3107,70 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
               registry.registerStaticInvocation(semantics.setter);
               break;
           }
-
-          // TODO(23998): Remove these when elements are only accessed
-          // through the send structure.
-          registry.useElement(node, semantics.setter);
         }
+        return handleUpdate(node, name, semantics);
+      } else {
+        // `super.a += b`.
+        if (semantics == null) {
+          semantics = computeSuperAccessSemanticsForSelectors(
+              node, getterSelector, setterSelector);
+          registry.registerStaticInvocation(semantics.getter);
+          registry.registerStaticInvocation(semantics.setter);
+        }
+        return handleUpdate(node, name, semantics);
+      }
+    }
+  }
+
+  /// Handle update of an entity defined by [semantics]. For instance `a = b`,
+  /// `a++` or `a += b` where [semantics] describe `a`.
+  ResolutionResult handleUpdate(
+      SendSet node,
+      Name name,
+      AccessSemantics semantics) {
+    SendStructure sendStructure;
+    String operatorText = node.assignmentOperator.source;
+    Selector getterSelector =
+        new Selector(SelectorKind.GETTER, name, CallStructure.NO_ARGS);
+    Selector setterSelector =
+        new Selector(SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
+    if (node.isPrefix || node.isPostfix) {
+      // `e++` or `++e`.
+      IncDecOperator operator = IncDecOperator.parse(operatorText);
+      Selector operatorSelector =
+          new Selector.binaryOperator(operator.selectorName);
+
+      // TODO(23998): Remove these when selectors are only accessed
+      // through the send structure.
+      registry.setGetterSelectorInComplexSendSet(node, getterSelector);
+      registry.setSelector(node, setterSelector);
+      registry.setOperatorSelectorInComplexSendSet(node, operatorSelector);
+
+      // TODO(23998): Remove these when elements are only accessed
+      // through the send structure.
+      registry.useElement(node, semantics.setter);
+      registry.useElement(node.selector, semantics.getter);
+
+      registry.registerDynamicInvocation(
+          new UniverseSelector(operatorSelector, null));
+
+      SendStructure sendStructure = node.isPrefix
+          ? new PrefixStructure(
+              semantics, operator, getterSelector, setterSelector)
+          : new PostfixStructure(
+              semantics, operator, getterSelector, setterSelector);
+      registry.registerSendStructure(node, sendStructure);
+    } else {
+      Node rhs = node.arguments.head;
+      visitExpression(rhs);
+
+      AssignmentOperator operator = AssignmentOperator.parse(operatorText);
+      if (operator.kind == AssignmentOperatorKind.ASSIGN) {
+        // `e1 = e2`.
+
+        // TODO(23998): Remove these when elements are only accessed
+        // through the send structure.
+        registry.useElement(node, semantics.setter);
 
         // TODO(23998): Remove this when selectors are only accessed
         // through the send structure.
@@ -3006,27 +3179,15 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         SendStructure sendStructure =
             new SetStructure(semantics, setterSelector);
         registry.registerSendStructure(node, sendStructure);
-        return const NoneResult();
       } else {
-        // `super.a += b`.
-        Selector getterSelector = new Selector(
-            SelectorKind.GETTER, name, CallStructure.NO_ARGS);
-        Selector setterSelector = new Selector(
-            SelectorKind.SETTER, name.setter, CallStructure.ONE_ARG);
+        // `e1 += e2`.
         Selector operatorSelector =
             new Selector.binaryOperator(operator.selectorName);
-        if (semantics == null) {
-          semantics = computeSuperAccessSemanticsForSelectors(
-              node, getterSelector, setterSelector);
 
-          registry.registerStaticInvocation(semantics.getter);
-          registry.registerStaticInvocation(semantics.setter);
-
-          // TODO(23998): Remove these when elements are only accessed
-          // through the send structure.
-          registry.useElement(node, semantics.setter);
-          registry.useElement(node.selector, semantics.getter);
-        }
+        // TODO(23998): Remove these when elements are only accessed
+        // through the send structure.
+        registry.useElement(node, semantics.setter);
+        registry.useElement(node.selector, semantics.getter);
 
         // TODO(23998): Remove these when selectors are only accessed
         // through the send structure.
@@ -3040,9 +3201,9 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
         SendStructure sendStructure = new CompoundStructure(
                 semantics, operator, getterSelector, setterSelector);
         registry.registerSendStructure(node, sendStructure);
-        return const NoneResult();
       }
     }
+    return new ResolutionResult.forElement(semantics.setter);
   }
 
   ResolutionResult visitSendSet(SendSet node) {
@@ -3054,6 +3215,8 @@ class ResolverVisitor extends MappingVisitor<ResolutionResult> {
       }
     } else if (node.isSuperCall) {
       return handleSuperSendSet(node);
+    } else if (node.receiver == null) {
+      return handleUnqualifiedSendSet(node);
     }
     return oldVisitSendSet(node);
   }

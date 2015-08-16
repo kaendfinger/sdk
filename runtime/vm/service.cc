@@ -585,6 +585,16 @@ void Service::InvokeMethod(Isolate* isolate, const Array& msg) {
       return;
     }
 
+    if (ScheduleExtensionHandler(method_name,
+                                 param_keys,
+                                 param_values,
+                                 reply_port,
+                                 seq)) {
+      // Schedule was successful. Extension code will post a reply
+      // asynchronously.
+      return;
+    }
+
     PrintUnrecognizedMethodError(&js);
     js.PostReply();
     return;
@@ -866,6 +876,31 @@ EmbedderServiceHandler* Service::FindRootEmbedderHandler(
     current = current->next();
   }
   return NULL;
+}
+
+
+bool Service::ScheduleExtensionHandler(const String& method_name,
+                                       const Array& parameter_keys,
+                                       const Array& parameter_values,
+                                       const Instance& reply_port,
+                                       const Instance& id) {
+  ASSERT(!method_name.IsNull());
+  ASSERT(!parameter_keys.IsNull());
+  ASSERT(!parameter_values.IsNull());
+  ASSERT(!reply_port.IsNull());
+  const Library& developer_lib = Library::Handle(Library::DeveloperLibrary());
+  ASSERT(!developer_lib.IsNull());
+  const Function& schedule_extension = Function::Handle(
+      developer_lib.LookupLocalFunction(Symbols::_scheduleExtension()));
+  ASSERT(!schedule_extension.IsNull());
+  const Array& arguments = Array::Handle(Array::New(5));
+  arguments.SetAt(0, method_name);
+  arguments.SetAt(1, parameter_keys);
+  arguments.SetAt(2, parameter_values);
+  arguments.SetAt(3, reply_port);
+  arguments.SetAt(4, id);
+  return (DartEntry::InvokeFunction(schedule_extension, arguments) ==
+          Object::bool_true().raw());
 }
 
 
@@ -1934,6 +1969,7 @@ static bool GetHitsOrSites(Isolate* isolate, JSONStream* js, bool as_sites) {
 
 static const MethodParameter* get_coverage_params[] = {
   ISOLATE_PARAMETER,
+  new IdParameter("targetId", false),
   NULL,
 };
 
@@ -1946,7 +1982,7 @@ static bool GetCoverage(Isolate* isolate, JSONStream* js) {
 
 static const MethodParameter* get_call_site_data_params[] = {
   ISOLATE_PARAMETER,
-  new IdParameter("targetId", true),
+  new IdParameter("targetId", false),
   NULL,
 };
 
@@ -2258,6 +2294,11 @@ static const MethodParameter* resume_params[] = {
 static bool Resume(Isolate* isolate, JSONStream* js) {
   const char* step_param = js->LookupParam("step");
   if (isolate->message_handler()->paused_on_start()) {
+    // If the user is issuing a 'Over' or an 'Out' step, that is the
+    // same as a regular resume request.
+    if ((step_param != NULL) && (strcmp(step_param, "Into") == 0)) {
+      isolate->debugger()->EnterSingleStepMode();
+    }
     isolate->message_handler()->set_pause_on_start(false);
     if (Service::debug_stream.enabled()) {
       ServiceEvent event(isolate, ServiceEvent::kResume);
@@ -2777,7 +2818,7 @@ static bool GetVersion(Isolate* isolate, JSONStream* js) {
   JSONObject jsobj(js);
   jsobj.AddProperty("type", "Version");
   jsobj.AddProperty("major", static_cast<intptr_t>(2));
-  jsobj.AddProperty("minor", static_cast<intptr_t>(0));
+  jsobj.AddProperty("minor", static_cast<intptr_t>(1));
   jsobj.AddProperty("_privateMajor", static_cast<intptr_t>(0));
   jsobj.AddProperty("_privateMinor", static_cast<intptr_t>(0));
   return true;

@@ -359,13 +359,6 @@ static void PushArgumentsArray(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t, DeoptimizeCopyFrame,
-                           intptr_t deopt_reason,
-                           uword saved_registers_address);
-
-DECLARE_LEAF_RUNTIME_ENTRY(void, DeoptimizeFillFrame, uword last_fp);
-
-
 // Used by eager and lazy deoptimization. Preserve result in RAX if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -463,7 +456,6 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
   // Enter stub frame with loading PP. The caller's PP is not materialized yet.
   __ EnterStubFrame();
   if (preserve_result) {
-    __ pushq(Immediate(0));  // Workaround for dropped stack slot during GC.
     __ pushq(RBX);  // Preserve result, it will be GC-d here.
   }
   __ pushq(Immediate(Smi::RawValue(0)));  // Space for the result.
@@ -474,7 +466,6 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
   __ SmiUntag(RBX);
   if (preserve_result) {
     __ popq(RAX);  // Restore result.
-    __ Drop(1);  // Workaround for dropped stack slot during GC.
   }
   __ LeaveStubFrame();
 
@@ -602,7 +593,7 @@ void StubCode::GenerateAllocateArrayStub(Assembler* assembler) {
   // Check for allocation tracing.
   __ MaybeTraceAllocation(kArrayCid,
                           &slow_case,
-                          /* near_jump = */ false,
+                          Assembler::kFarJump,
                           /* inline_isolate = */ false);
 
   const intptr_t fixed_size = sizeof(RawArray) + kObjectAlignment - 1;
@@ -857,6 +848,12 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
     __ leaq(R13, Address(R10, TIMES_8, fixed_size));
     __ andq(R13, Immediate(-kObjectAlignment));
 
+    // Check for allocation tracing.
+    __ MaybeTraceAllocation(kContextCid,
+                            &slow_case,
+                            Assembler::kFarJump,
+                            /* inline_isolate = */ false);
+
     // Now allocate the object.
     // R10: number of context variables.
     const intptr_t cid = kContextCid;
@@ -972,8 +969,6 @@ void StubCode::GenerateAllocateContextStub(Assembler* assembler) {
 }
 
 
-DECLARE_LEAF_RUNTIME_ENTRY(void, StoreBufferBlockProcess, Isolate* isolate);
-
 // Helper stub to implement Assembler::StoreIntoObject.
 // Input parameters:
 //   RDX: Address being stored
@@ -1065,8 +1060,9 @@ void StubCode::GenerateAllocationStubForClass(
     __ movq(RDX, Address(RSP, kObjectTypeArgumentsOffset));
     // RDX: instantiated type arguments.
   }
+  Isolate* isolate = Isolate::Current();
   if (FLAG_inline_alloc && Heap::IsAllocatableInNewSpace(instance_size) &&
-      !cls.trace_allocation()) {
+      !cls.TraceAllocation(isolate)) {
     Label slow_case;
     // Allocate the object and update top to point to
     // next object start and initialize the allocated object.
@@ -1983,12 +1979,6 @@ void StubCode::GenerateOptimizeFunctionStub(Assembler* assembler) {
   __ jmp(RAX);
   __ int3();
 }
-
-
-DECLARE_LEAF_RUNTIME_ENTRY(intptr_t,
-                           BigintCompare,
-                           RawBigint* left,
-                           RawBigint* right);
 
 
 // Does identical check (object references are equal or not equal) with special

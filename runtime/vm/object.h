@@ -249,23 +249,6 @@ class Object {
     return AtomicOperations::CompareAndSwapWord(
         &raw()->ptr()->tags_, old_tags, new_tags);
   }
-  void set_tags(intptr_t value) const {
-    ASSERT(!IsNull());
-    // TODO(asiva): Remove the capability of setting tags in general. The mask
-    // here only allows for canonical and from_snapshot flags to be set.
-    value = value & 0x0000000c;
-    uword tags = raw()->ptr()->tags_;
-    uword old_tags;
-    do {
-      old_tags = tags;
-      uword new_tags = (old_tags & ~0x0000000c) | value;
-      tags = CompareAndSwapTags(old_tags, new_tags);
-    } while (tags != old_tags);
-  }
-  void SetCreatedFromSnapshot() const {
-    ASSERT(!IsNull());
-    raw()->SetCreatedFromSnapshot();
-  }
   bool IsCanonical() const {
     ASSERT(!IsNull());
     return raw()->IsCanonical();
@@ -728,7 +711,10 @@ class Object {
     return -kWordSize;
   }
 
-  static void InitializeObject(uword address, intptr_t id, intptr_t size);
+  static void InitializeObject(uword address,
+                               intptr_t id,
+                               intptr_t size,
+                               bool is_vm_object);
 
   static void RegisterClass(const Class& cls,
                             const String& name,
@@ -945,6 +931,7 @@ class Class : public Object {
   RawString* Name() const;
   RawString* PrettyName() const;
   RawString* UserVisibleName() const;
+  bool IsInFullSnapshot() const;
 
   virtual RawString* DictionaryName() const { return Name(); }
 
@@ -1114,6 +1101,10 @@ class Class : public Object {
   }
   static bool IsSignatureClass(RawClass* cls) {
     return cls->ptr()->signature_function_ != Object::null();
+  }
+  static bool IsInFullSnapshot(RawClass* cls) {
+    NoSafepointScope no_safepoint;
+    return cls->ptr()->library_->ptr()->is_in_fullsnapshot_;
   }
 
   // Check if this class represents a canonical signature class, i.e. not an
@@ -1375,9 +1366,7 @@ class Class : public Object {
   RawArray* cha_codes() const { return raw_ptr()->cha_codes_; }
   void set_cha_codes(const Array& value) const;
 
-  bool trace_allocation() const {
-    return TraceAllocationBit::decode(raw_ptr()->state_bits_);
-  }
+  bool TraceAllocation(Isolate* isolate) const;
   void SetTraceAllocation(bool trace_allocation) const;
 
  private:
@@ -1403,7 +1392,6 @@ class Class : public Object {
     kFieldsMarkedNullableBit = 11,
     kCycleFreeBit = 12,
     kEnumBit = 13,
-    kTraceAllocationBit = 14,
     kIsAllocatedBit = 15,
   };
   class ConstBit : public BitField<bool, kConstBit, 1> {};
@@ -1421,7 +1409,6 @@ class Class : public Object {
       kFieldsMarkedNullableBit, 1> {};  // NOLINT
   class CycleFreeBit : public BitField<bool, kCycleFreeBit, 1> {};
   class EnumBit : public BitField<bool, kEnumBit, 1> {};
-  class TraceAllocationBit : public BitField<bool, kTraceAllocationBit, 1> {};
   class IsAllocatedBit : public BitField<bool, kIsAllocatedBit, 1> {};
 
   void set_name(const String& value) const;
@@ -2117,13 +2104,10 @@ class Function : public Object {
   RawClass* origin() const;
   RawScript* script() const;
 
-  void set_regexp(const JSRegExp& value) const;
   RawJSRegExp* regexp() const;
-
-  // Get and set the class id this function is specialized for. Only set for
-  // irregexp functions.
-  intptr_t regexp_cid() const { return raw_ptr()->regexp_cid_; }
-  void set_regexp_cid(intptr_t regexp_cid) const;
+  intptr_t string_specialization_cid() const;
+  void SetRegExpData(const JSRegExp& regexp,
+                     intptr_t string_specialization_cid) const;
 
   RawAbstractType* result_type() const { return raw_ptr()->result_type_; }
   void set_result_type(const AbstractType& value) const;
@@ -2814,8 +2798,14 @@ class Field : public Object {
   bool is_static() const { return StaticBit::decode(raw_ptr()->kind_bits_); }
   bool is_final() const { return FinalBit::decode(raw_ptr()->kind_bits_); }
   bool is_const() const { return ConstBit::decode(raw_ptr()->kind_bits_); }
-  bool is_synthetic() const {
-    return SyntheticBit::decode(raw_ptr()->kind_bits_);
+  bool is_reflectable() const {
+    return ReflectableBit::decode(raw_ptr()->kind_bits_);
+  }
+  bool is_double_initialized() const {
+    return DoubleInitializedBit::decode(raw_ptr()->kind_bits_);
+  }
+  void set_is_double_initialized(bool value) const {
+    set_kind_bits(DoubleInitializedBit::update(value, raw_ptr()->kind_bits_));
   }
 
   inline intptr_t Offset() const;
@@ -2838,7 +2828,7 @@ class Field : public Object {
                        bool is_static,
                        bool is_final,
                        bool is_const,
-                       bool is_synthetic,
+                       bool is_reflectable,
                        const Class& owner,
                        intptr_t token_pos);
 
@@ -2987,16 +2977,18 @@ class Field : public Object {
     kFinalBit,
     kHasInitializerBit,
     kUnboxingCandidateBit,
-    kSyntheticBit
+    kReflectableBit,
+    kDoubleInitializedBit,
   };
   class ConstBit : public BitField<bool, kConstBit, 1> {};
   class StaticBit : public BitField<bool, kStaticBit, 1> {};
   class FinalBit : public BitField<bool, kFinalBit, 1> {};
   class HasInitializerBit : public BitField<bool, kHasInitializerBit, 1> {};
   class UnboxingCandidateBit : public BitField<bool,
-                                               kUnboxingCandidateBit, 1> {
-  };
-  class SyntheticBit : public BitField<bool, kSyntheticBit, 1> {};
+                                               kUnboxingCandidateBit, 1> {};
+  class ReflectableBit : public BitField<bool, kReflectableBit, 1> {};
+  class DoubleInitializedBit : public BitField<bool,
+                                               kDoubleInitializedBit, 1> {};
 
   // Update guarded cid and guarded length for this field. Returns true, if
   // deoptimization of dependent code is required.
@@ -3012,8 +3004,8 @@ class Field : public Object {
   void set_is_const(bool value) const {
     set_kind_bits(ConstBit::update(value, raw_ptr()->kind_bits_));
   }
-  void set_is_synthetic(bool value) const {
-    set_kind_bits(SyntheticBit::update(value, raw_ptr()->kind_bits_));
+  void set_is_reflectable(bool value) const {
+    set_kind_bits(ReflectableBit::update(value, raw_ptr()->kind_bits_));
   }
   void set_owner(const Object& value) const {
     StorePointer(&raw_ptr()->owner_, value.raw());
@@ -3384,6 +3376,11 @@ class Library : public Object {
                     native_symbol_resolver);
   }
 
+  bool is_in_fullsnapshot() const { return raw_ptr()->is_in_fullsnapshot_; }
+  void set_is_in_fullsnapshot(bool value) const {
+    StoreNonPointer(&raw_ptr()->is_in_fullsnapshot_, value);
+  }
+
   RawError* Patch(const Script& script) const;
 
   RawString* PrivateName(const String& name) const;
@@ -3551,6 +3548,7 @@ class ObjectPool : public Object {
   enum EntryType {
     kTaggedObject,
     kImmediate,
+    kExternalLabel,
   };
 
   struct Entry {

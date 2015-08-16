@@ -7,7 +7,7 @@ import '../../constants/values.dart';
 import '../../elements/elements.dart';
 import '../../io/source_information.dart';
 import '../../js_backend/codegen/glue.dart';
-import '../../dart2jslib.dart' show Selector, World;
+import '../../universe/universe.dart' show Selector;
 import '../../cps_ir/cps_ir_builder.dart' show ThisParameterLocal;
 
 class ExplicitReceiverParameterEntity implements Local {
@@ -293,6 +293,21 @@ class UnsugarVisitor extends RecursiveVisitor {
     // TODO(karlklose): implement the checked mode part of boolean conversion.
     InteriorNode parent = node.parent;
     IsTrue condition = node.condition;
+
+    // Do not rewrite conditions that are foreign code.
+    // It is redundant, and causes infinite recursion (if not optimized)
+    // in the implementation of identical, which itself contains a condition.
+    Primitive value = condition.value.definition;
+    if (value is Parameter && value.parent is Continuation) {
+      Continuation cont = value.parent;
+      if (cont.hasExactlyOneUse && cont.firstRef.parent is ForeignCode) {
+        ForeignCode foreign = cont.firstRef.parent;
+        if (foreign.type.containsOnlyBool(_glue.classWorld)) {
+          return;
+        }
+      }
+    }
+
     Primitive t = trueConstant;
     Primitive i = new ApplyBuiltinOperator(
         BuiltinOperator.Identical,
