@@ -338,7 +338,7 @@ class Object {
   }
 
   static Object& Handle() {
-    return Handle(Isolate::Current(), null_);
+    return Handle(Thread::Current()->zone(), null_);
   }
 
   static Object& Handle(Zone* zone) {
@@ -350,7 +350,7 @@ class Object {
   }
 
   static Object& Handle(RawObject* raw_ptr) {
-    return Handle(Isolate::Current(), raw_ptr);
+    return Handle(Thread::Current()->zone(), raw_ptr);
   }
 
   static Object& ZoneHandle(Zone* zone, RawObject* raw_ptr) {
@@ -1034,12 +1034,16 @@ class Class : public Object {
     return OFFSET_OF(RawClass, type_arguments_field_offset_in_words_);
   }
 
-  RawType* CanonicalType() const {
-    if ((NumTypeArguments() == 0) && !IsSignatureClass()) {
-      return reinterpret_cast<RawType*>(raw_ptr()->canonical_types_);
-    }
-    return reinterpret_cast<RawType*>(Object::null());
-  }
+  // Returns the cached canonical type of this class, i.e. the canonical type
+  // whose type class is this class and whose type arguments are the
+  // uninstantiated type parameters declared by this class if it is generic,
+  // e.g. Map<K, V>.
+  // Returns Type::null() if the canonical type is not cached yet.
+  RawType* CanonicalType() const;
+
+  // Caches the canonical type of this class.
+  void SetCanonicalType(const Type& type) const;
+
   static intptr_t canonical_types_offset() {
     return OFFSET_OF(RawClass, canonical_types_);
   }
@@ -1193,7 +1197,6 @@ class Class : public Object {
 
   void InsertCanonicalConstant(intptr_t index, const Instance& constant) const;
 
-  intptr_t NumCanonicalTypes() const;
   intptr_t FindCanonicalTypeIndex(const Type& needle) const;
   RawType* CanonicalTypeFromIndex(intptr_t idx) const;
 
@@ -2002,6 +2005,8 @@ class ICData : public Object {
                         bool is_static_call) const;
 
  private:
+  static RawICData* New();
+
   RawArray* ic_data() const {
     return raw_ptr()->ic_data_;
   }
@@ -2142,8 +2147,8 @@ class Function : public Object {
   void set_unoptimized_code(const Code& value) const;
   bool HasCode() const;
 
-  static intptr_t instructions_offset() {
-    return OFFSET_OF(RawFunction, instructions_);
+  static intptr_t entry_point_offset() {
+    return OFFSET_OF(RawFunction, entry_point_);
   }
 
   // Returns true if there is at least one debugger breakpoint
@@ -3623,8 +3628,15 @@ class ObjectPool : public Object {
 
   static RawObjectPool* New(intptr_t len);
 
+  // Returns the pool index from the offset relative to a tagged RawObjectPool*,
+  // adjusting for the tag-bit.
   static intptr_t IndexFromOffset(intptr_t offset) {
+    ASSERT(Utils::IsAligned(offset + kHeapObjectTag, kWordSize));
     return (offset + kHeapObjectTag - data_offset()) / kBytesPerElement;
+  }
+
+  static intptr_t OffsetFromIndex(intptr_t index) {
+    return element_offset(index) - kHeapObjectTag;
   }
 
   void DebugPrint() const;
@@ -4029,9 +4041,11 @@ class DeoptInfo : public AllStatic {
 class Code : public Object {
  public:
   RawInstructions* instructions() const { return raw_ptr()->instructions_; }
-  static intptr_t instructions_offset() {
-    return OFFSET_OF(RawCode, instructions_);
+
+  static intptr_t entry_point_offset() {
+    return OFFSET_OF(RawCode, entry_point_);
   }
+
   intptr_t pointer_offsets_length() const {
     return PtrOffBits::decode(raw_ptr()->state_bits_);
   }
@@ -4046,8 +4060,9 @@ class Code : public Object {
   void set_is_alive(bool value) const;
 
   uword EntryPoint() const {
-    const Instructions& instr = Instructions::Handle(instructions());
-    return instr.EntryPoint();
+    ASSERT(raw_ptr()->entry_point_ ==
+           Instructions::Handle(instructions()).EntryPoint());
+    return raw_ptr()->entry_point_;
   }
   intptr_t Size() const {
     const Instructions& instr = Instructions::Handle(instructions());
@@ -4338,6 +4353,9 @@ class Code : public Object {
     // RawInstructions are never allocated in New space and hence a
     // store buffer update is not needed here.
     StorePointer(&raw_ptr()->instructions_, instructions);
+    uword entry_point = reinterpret_cast<uword>(instructions->ptr()) +
+        Instructions::HeaderSize();
+    StoreNonPointer(&raw_ptr()->entry_point_, entry_point);
   }
 
   void set_pointer_offsets_length(intptr_t value) {
@@ -4370,6 +4388,7 @@ class Code : public Object {
 
   FINAL_HEAP_OBJECT_IMPLEMENTATION(Code, Object);
   friend class Class;
+  friend class SnapshotWriter;
 
   // So that the RawFunction pointer visitor can determine whether code the
   // function points to is optimized.

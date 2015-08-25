@@ -48,10 +48,8 @@ class ICData;
 class Instance;
 class IsolateProfilerData;
 class IsolateSpawnState;
-class InterruptableThreadState;
 class Library;
 class Log;
-class LongJumpScope;
 class MessageHandler;
 class Mutex;
 class Object;
@@ -238,9 +236,6 @@ class Isolate : public BaseIsolate {
   ApiState* api_state() const { return api_state_; }
   void set_api_state(ApiState* value) { api_state_ = value; }
 
-  LongJumpScope* long_jump_base() const { return long_jump_base_; }
-  void set_long_jump_base(LongJumpScope* value) { long_jump_base_ = value; }
-
   TimerList& timer_list() { return timer_list_; }
 
   void set_init_callback_data(void* value) {
@@ -271,6 +266,7 @@ class Isolate : public BaseIsolate {
 
   // Returns the current C++ stack pointer. Equivalent taking the address of a
   // stack allocated local, but plays well with AddressSanitizer.
+  // TODO(koda): Move to Thread.
   static uword GetCurrentStackPointer();
 
   // Returns true if any of the interrupts specified by 'interrupt_bits' are
@@ -576,14 +572,6 @@ class Isolate : public BaseIsolate {
     return trace_buffer_;
   }
 
-  void SetTimelineEventRecorder(TimelineEventRecorder* timeline_event_recorder);
-
-  TimelineEventRecorder* timeline_event_recorder() const {
-    return timeline_event_recorder_;
-  }
-
-  void RemoveTimelineEventRecorder();
-
   DeoptContext* deopt_context() const { return deopt_context_; }
   void set_deopt_context(DeoptContext* value) {
     ASSERT(value == NULL || deopt_context_ == NULL);
@@ -644,10 +632,6 @@ class Isolate : public BaseIsolate {
   }
 
   void PrintJSON(JSONStream* stream, bool ref = true);
-
-  InterruptableThreadState* thread_state() const {
-    return (mutator_thread_ == NULL) ? NULL : mutator_thread_->thread_state();
-  }
 
   CompilerStats* compiler_stats() {
     return compiler_stats_;
@@ -823,7 +807,6 @@ class Isolate : public BaseIsolate {
   Flags flags_;
   Random random_;
   Simulator* simulator_;
-  LongJumpScope* long_jump_base_;
   TimerList timer_list_;
   intptr_t deopt_id_;
   Mutex* mutex_;  // protects stack_limit_ and saved_stack_limit_.
@@ -860,9 +843,6 @@ class Isolate : public BaseIsolate {
 
   // Trace buffer support.
   TraceBuffer* trace_buffer_;
-
-  // TimelineEvent buffer.
-  TimelineEventRecorder* timeline_event_recorder_;
 
   IsolateProfilerData* profiler_data_;
   Mutex profiler_data_mutex_;
@@ -932,7 +912,6 @@ class Isolate : public BaseIsolate {
   // Manage list of existing isolates.
   static void AddIsolateTolist(Isolate* isolate);
   static void RemoveIsolateFromList(Isolate* isolate);
-  static void CheckForDuplicateThreadState(InterruptableThreadState* state);
 
   static Monitor* isolates_list_monitor_;  // Protects isolates_list_head_
   static Isolate* isolates_list_head_;

@@ -1450,6 +1450,18 @@ main() {
     verify([source]);
   }
 
+  void test_exportDuplicatedLibraryUnnamed() {
+    Source source = addSource(r'''
+library test;
+export 'lib1.dart';
+export 'lib2.dart';''');
+    addNamedSource("/lib1.dart", "");
+    addNamedSource("/lib2.dart", "");
+    computeLibrarySourceErrors(source);
+    assertNoErrors(source);
+    verify([source]);
+  }
+
   void test_exportOfNonLibrary_libraryDeclared() {
     Source source = addSource(r'''
 library L;
@@ -1964,6 +1976,22 @@ import 'lib.dart';''');
       HintCode.UNUSED_IMPORT,
       HintCode.UNUSED_IMPORT,
       HintCode.DUPLICATE_IMPORT
+    ]);
+    verify([source]);
+  }
+
+  void test_importDuplicatedLibraryUnnamed() {
+    Source source = addSource(r'''
+library test;
+import 'lib1.dart';
+import 'lib2.dart';''');
+    addNamedSource("/lib1.dart", "");
+    addNamedSource("/lib2.dart", "");
+    computeLibrarySourceErrors(source);
+    assertErrors(source, [
+      // No warning on duplicate import (https://github.com/dart-lang/sdk/issues/24156)
+      HintCode.UNUSED_IMPORT,
+      HintCode.UNUSED_IMPORT
     ]);
     verify([source]);
   }
@@ -2955,6 +2983,22 @@ main() {
   Functor f = new Functor();
   f();
 }''');
+    computeLibrarySourceErrors(source);
+    assertNoErrors(source);
+    verify([source]);
+  }
+
+  void test_issue_24191() {
+    Source source = addSource('''
+import 'dart:async';
+
+class S extends Stream {}
+f(S s) async {
+  await for (var v in s) {
+    print(v);
+  }
+}
+''');
     computeLibrarySourceErrors(source);
     assertNoErrors(source);
     verify([source]);

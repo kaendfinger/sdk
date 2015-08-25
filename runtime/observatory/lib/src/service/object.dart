@@ -365,6 +365,19 @@ abstract class HeapObject extends ServiceObject {
   @observable int retainedSize;
 
   HeapObject._empty(ServiceObjectOwner owner) : super._empty(owner);
+
+  void _update(ObservableMap map, bool mapIsRef) {
+    if (map['class'] != null) {
+      // Sent with refs for some types. Load it if available, but don't clobber
+      // it with null for kinds that only send if for full responses.
+      clazz = map['class'];
+    }
+
+    if (mapIsRef) {
+      return;
+    }
+    size = map['size'];
+  }
 }
 
 abstract class Coverage {
@@ -959,10 +972,10 @@ class HeapSnapshot {
                                                  limit: limit)) {
       result.add(isolate.getObjectByAddress(v.address)
                         .then((ServiceObject obj) {
-        if (obj is Instance) {
-          // TODO(rmacnak): size/retainedSize are properties of all heap
-          // objects, not just Instances.
+        if (obj is HeapObject) {
           obj.retainedSize = v.retainedSize;
+        } else {
+          print("${obj.runtimeType} should be a HeapObject");
         }
         return obj;
       }));
@@ -1321,6 +1334,7 @@ class Isolate extends ServiceObjectOwner with Coverage {
   void _onEvent(ServiceEvent event) {
     switch(event.kind) {
       case ServiceEvent.kIsolateStart:
+      case ServiceEvent.kIsolateRunnable:
       case ServiceEvent.kIsolateExit:
       case ServiceEvent.kInspect:
         // Handled elsewhere.
@@ -1624,7 +1638,7 @@ class ServiceMap extends ServiceObject implements ObservableMap {
     _map.addAll(map);
 
     name = _map['name'];
-    vmName = (_map.containsKey('vmName') ? _map['vmName'] : name);
+    vmName = (_map.containsKey('_vmName') ? _map['_vmName'] : name);
   }
 
   // TODO(turnidge): These are temporary until we have a proper root
@@ -1693,6 +1707,7 @@ Level _findLogLevel(int value) {
 class ServiceEvent extends ServiceObject {
   /// The possible 'kind' values.
   static const kIsolateStart           = 'IsolateStart';
+  static const kIsolateRunnable        = 'IsolateRunnable';
   static const kIsolateExit            = 'IsolateExit';
   static const kIsolateUpdate          = 'IsolateUpdate';
   static const kPauseStart             = 'PauseStart';
@@ -1722,6 +1737,7 @@ class ServiceEvent extends ServiceObject {
   @observable Frame topFrame;
   @observable Instance exception;
   @observable Instance asyncContinuation;
+  @observable bool atAsyncJump;
   @observable ServiceObject inspectee;
   @observable ByteData data;
   @observable int count;
@@ -1764,6 +1780,9 @@ class ServiceEvent extends ServiceObject {
     }
     if (map['_asyncContinuation'] != null) {
       asyncContinuation = map['_asyncContinuation'];
+      atAsyncJump = map['_atAsyncJump'];
+    } else {
+      atAsyncJump = false;
     }
     if (map['inspectee'] != null) {
       inspectee = map['inspectee'];
@@ -1905,7 +1924,7 @@ class LibraryDependency {
 }
 
 
-class Library extends ServiceObject with Coverage {
+class Library extends HeapObject with Coverage {
   @observable String uri;
   @reflectable final dependencies = new ObservableList<LibraryDependency>();
   @reflectable final scripts = new ObservableList<Script>();
@@ -1919,6 +1938,9 @@ class Library extends ServiceObject with Coverage {
   Library._empty(ServiceObjectOwner owner) : super._empty(owner);
 
   void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
     uri = map['uri'];
     var shortUri = uri;
     if (uri.startsWith('file://') ||
@@ -1930,12 +1952,11 @@ class Library extends ServiceObject with Coverage {
       // When there is no name for a library, use the shortUri.
       name = shortUri;
     }
-    vmName = (map.containsKey('vmName') ? map['vmName'] : name);
+    vmName = (map.containsKey('_vmName') ? map['_vmName'] : name);
     if (mapIsRef) {
       return;
     }
     _loaded = true;
-    _upgradeCollection(map, isolate);
     dependencies.clear();
     dependencies.addAll(map["dependencies"].map(LibraryDependency._fromMap));
     scripts.clear();
@@ -2001,7 +2022,7 @@ class Allocations {
   bool get empty => accumulated.empty && current.empty;
 }
 
-class Class extends ServiceObject with Coverage {
+class Class extends HeapObject with Coverage {
   @observable Library library;
 
   @observable bool isAbstract;
@@ -2034,8 +2055,14 @@ class Class extends ServiceObject with Coverage {
   Class._empty(ServiceObjectOwner owner) : super._empty(owner);
 
   void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
     name = map['name'];
-    vmName = (map.containsKey('vmName') ? map['vmName'] : name);
+    vmName = (map.containsKey('_vmName') ? map['_vmName'] : name);
+    if (vmName == '::') {
+      name = 'top-level-class';  // Better than ''
+    }
     var idPrefix = "classes/";
     assert(id.startsWith(idPrefix));
     vmCid = int.parse(id.substring(idPrefix.length));
@@ -2128,18 +2155,15 @@ class Class extends ServiceObject with Coverage {
   String toString() => 'Class($vmName)';
 }
 
-class Instance extends ServiceObject {
+class Instance extends HeapObject {
   @observable String kind;
-  @observable Class clazz;
-  @observable int size;
-  @observable int retainedSize;
   @observable String valueAsString;  // If primitive.
   @observable bool valueAsStringIsTruncated;
   @observable ServiceFunction function;  // If a closure.
   @observable Context context;  // If a closure.
   @observable String name;  // If a Type.
   @observable int length; // If a List, Map or TypedData.
-  @observable String pattern;  // If a RegExp.
+  @observable Instance pattern;  // If a RegExp.
 
   @observable var typeClass;
   @observable var fields;
@@ -2199,9 +2223,9 @@ class Instance extends ServiceObject {
   void _update(ObservableMap map, bool mapIsRef) {
     // Extract full properties.
     _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
 
     kind = map['kind'];
-    clazz = map['class'];
     valueAsString = map['valueAsString'];
     // Coerce absence to false.
     valueAsStringIsTruncated = map['valueAsStringIsTruncated'] == true;
@@ -2214,8 +2238,6 @@ class Instance extends ServiceObject {
     if (mapIsRef) {
       return;
     }
-
-    size = map['size'];
 
     isCaseSensitive = map['isCaseSensitive'];
     isMultiLine = map['isMultiLine'];
@@ -2289,10 +2311,7 @@ class Instance extends ServiceObject {
 }
 
 
-class Context extends ServiceObject {
-  @observable Class clazz;
-  @observable int size;
-
+class Context extends HeapObject {
   @observable var parentContext;
   @observable int length;
   @observable var variables;
@@ -2302,6 +2321,7 @@ class Context extends ServiceObject {
   void _update(ObservableMap map, bool mapIsRef) {
     // Extract full properties.
     _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
 
     length = map['length'];
     parentContext = map['parent'];
@@ -2310,8 +2330,6 @@ class Context extends ServiceObject {
       return;
     }
 
-    size = map['size'];
-    clazz = map['class'];
     variables = map['variables'];
 
     // We are fully loaded.
@@ -2350,6 +2368,7 @@ class FunctionKind {
       case 'Native': return kNative;
       case 'Stub': return kStub;
       case 'Tag': return kTag;
+      case 'SignatureFunction': return kSignatureFunction;
     }
     Logger.root.severe('Unrecognized function kind: $value');
     throw new FallThroughError();
@@ -2372,10 +2391,11 @@ class FunctionKind {
   static FunctionKind kNative = new FunctionKind._internal('Native');
   static FunctionKind kTag = new FunctionKind._internal('Tag');
   static FunctionKind kStub = new FunctionKind._internal('Stub');
+  static FunctionKind kSignatureFunction = new FunctionKind._internal('SignatureFunction');
   static FunctionKind kUNKNOWN = new FunctionKind._internal('UNKNOWN');
 }
 
-class ServiceFunction extends ServiceObject with Coverage {
+class ServiceFunction extends HeapObject with Coverage {
   // owner is a Library, Class, or ServiceFunction.
   @observable ServiceObject dartOwner;
   @observable Library library;
@@ -2400,10 +2420,11 @@ class ServiceFunction extends ServiceObject with Coverage {
   ServiceFunction._empty(ServiceObject owner) : super._empty(owner);
 
   void _update(ObservableMap map, bool mapIsRef) {
-    name = map['name'];
-    vmName = (map.containsKey('vmName') ? map['vmName'] : name);
-
     _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
+    name = map['name'];
+    vmName = (map.containsKey('_vmName') ? map['_vmName'] : name);
 
     dartOwner = map['owner'];
     kind = FunctionKind.fromJSON(map['_kind']);
@@ -2443,7 +2464,7 @@ class ServiceFunction extends ServiceObject with Coverage {
 }
 
 
-class Field extends ServiceObject {
+class Field extends HeapObject {
   // Library or Class.
   @observable ServiceObject dartOwner;
   @observable Library library;
@@ -2465,9 +2486,10 @@ class Field extends ServiceObject {
   void _update(ObservableMap map, bool mapIsRef) {
     // Extract full properties.
     _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
 
     name = map['name'];
-    vmName = (map.containsKey('vmName') ? map['vmName'] : name);
+    vmName = (map.containsKey('_vmName') ? map['_vmName'] : name);
     dartOwner = map['owner'];
     declaredType = map['declaredType'];
     isStatic = map['static'];
@@ -2637,7 +2659,7 @@ class LocalVarLocation {
   LocalVarLocation(this.line, this.column, this.endColumn);
 }
 
-class Script extends ServiceObject with Coverage {
+class Script extends HeapObject with Coverage {
   Set<CallSite> callSites = new Set<CallSite>();
   final lines = new ObservableList<ScriptLine>();
   final _hits = new Map<int, int>();
@@ -2662,15 +2684,78 @@ class Script extends ServiceObject with Coverage {
   }
 
   /// This function maps a token position to a line number.
-  int tokenToLine(int token) => _tokenToLine[token];
+  int tokenToLine(int tokenPos) => _tokenToLine[tokenPos];
   Map _tokenToLine = {};
 
   /// This function maps a token position to a column number.
-  int tokenToCol(int token) => _tokenToCol[token];
+  int tokenToCol(int tokenPos) => _tokenToCol[tokenPos];
   Map _tokenToCol = {};
+
+  int guessTokenLength(int line, int column) {
+    String source = getLine(line).text;
+
+    var pos = column;
+    if (pos >= source.length) {
+      return null;
+    }
+
+    var c = source.codeUnitAt(pos);
+    if (c == 123) return 1; // { - Map literal
+
+    if (c == 91) return 1; // [ - List literal, index, index assignment
+
+    if (_isOperatorChar(c)) {
+      while (++pos < source.length &&
+             _isOperatorChar(source.codeUnitAt(pos)));
+      return pos - column;
+    }
+
+    if (_isInitialIdentifierChar(c)) {
+      while (++pos < source.length &&
+             _isIdentifierChar(source.codeUnitAt(pos)));
+      return pos - column;
+    }
+
+    return null;
+  }
+
+  static bool _isOperatorChar(int c) {
+    switch (c) {
+    case 25: // %
+    case 26: // &
+    case 42: // *
+    case 43: // +
+    case 45: // -:
+    case 47: // /
+    case 60: // <
+    case 61: // =
+    case 62: // >
+    case 94: // ^
+    case 124: // |
+    case 126: // ~
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  static bool _isInitialIdentifierChar(int c) {
+    if (c >= 65 && c <= 90) return true; // Upper
+    if (c >= 97 && c <= 122) return true; // Lower
+    if (c == 95) return true; // Underscore
+    if (c == 36) return true; // Dollar
+    return false;
+  }
+
+  static bool _isIdentifierChar(int c) {
+    if (_isInitialIdentifierChar(c)) return true;
+    return c >= 48 && c <= 75; // Digit
+  }
 
   void _update(ObservableMap map, bool mapIsRef) {
     _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
     uri = map['uri'];
     kind = map['_kind'];
     _shortUri = uri.substring(uri.lastIndexOf('/') + 1);
@@ -3042,15 +3127,15 @@ class ObjectPool extends HeapObject {
 
   ObjectPool._empty(ServiceObjectOwner owner) : super._empty(owner);
 
-  void _update(ObservableMap m, bool mapIsRef) {
-    _upgradeCollection(m, isolate);
-    clazz = m['class'];
-    length = m['length'];
+  void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
+    length = map['length'];
     if (mapIsRef) {
       return;
     }
-    size = m['size'];
-    entries = m['_entries'];
+    entries = map['_entries'];
   }
 }
 
@@ -3065,17 +3150,17 @@ class ICData extends HeapObject {
 
   ICData._empty(ServiceObjectOwner owner) : super._empty(owner);
 
-  void _update(ObservableMap m, bool mapIsRef) {
-    _upgradeCollection(m, isolate);
-    clazz = m['class'];
-    dartOwner = m['_owner'];
-    selector = m['_selector'];
+  void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
+    dartOwner = map['_owner'];
+    selector = map['_selector'];
     if (mapIsRef) {
       return;
     }
-    size = m['size'];
-    argumentsDescriptor = m['_argumentsDescriptor'];
-    entries = m['_entries'];
+    argumentsDescriptor = map['_argumentsDescriptor'];
+    entries = map['_entries'];
   }
 }
 
@@ -3088,15 +3173,15 @@ class Instructions extends HeapObject {
 
   Instructions._empty(ServiceObjectOwner owner) : super._empty(owner);
 
-  void _update(ObservableMap m, bool mapIsRef) {
-    _upgradeCollection(m, isolate);
-    clazz = m['class'];
-    code = m['_code'];
+  void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
+    code = map['_code'];
     if (mapIsRef) {
       return;
     }
-    size = m['size'];
-    objectPool = m['_objectPool'];
+    objectPool = map['_objectPool'];
   }
 }
 
@@ -3108,14 +3193,14 @@ class TokenStream extends HeapObject {
 
   TokenStream._empty(ServiceObjectOwner owner) : super._empty(owner);
 
-  void _update(ObservableMap m, bool mapIsRef) {
+  void _update(ObservableMap map, bool mapIsRef) {
+    _upgradeCollection(map, isolate);
+    super._update(map, mapIsRef);
+
     if (mapIsRef) {
       return;
     }
-    _upgradeCollection(m, isolate);
-    clazz = m['class'];
-    size = m['size'];
-    privateKey = m['privateKey'];
+    privateKey = map['privateKey'];
   }
 }
 
@@ -3286,14 +3371,13 @@ class Code extends HeapObject {
 
   void _update(ObservableMap m, bool mapIsRef) {
     name = m['name'];
-    vmName = (m.containsKey('vmName') ? m['vmName'] : name);
+    vmName = (m.containsKey('_vmName') ? m['_vmName'] : name);
     isOptimized = m['_optimized'];
     kind = CodeKind.fromString(m['kind']);
     if (mapIsRef) {
       return;
     }
     _loaded = true;
-    size = m['size'];
     startAddress = int.parse(m['_startAddress'], radix:16);
     endAddress = int.parse(m['_endAddress'], radix:16);
     function = isolate.getFromMap(m['function']);
@@ -3328,6 +3412,9 @@ class Code extends HeapObject {
       return;
     }
     _processInline(inlinedFunctionsTable, inlinedIntervals);
+
+    _upgradeCollection(m, isolate);
+    super._update(m, mapIsRef);
   }
 
   CodeInlineInterval findInterval(int pc) {
@@ -3643,7 +3730,7 @@ class Frame extends ServiceObject {
     this.variables = map['vars'];
   }
 
-  String toString() => "Frame(${function.qualifiedName})";
+  String toString() => "Frame(${function.qualifiedName} $location)";
 }
 
 

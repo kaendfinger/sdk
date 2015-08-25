@@ -8,6 +8,10 @@
 # prefix.
 
 package/invalid_uri_test: Fail, OK # CompileTimeErrors intentionally
+package/scenarios/packages_file_strange_formatting/empty_package_dir_test: Fail, OK # CompileTimeErrors intentionally
+package/scenarios/empty_packages_file/empty_packages_file_discovery_test: Fail, OK # CompileTimeErrors intentionally
+package/scenarios/empty_packages_file/empty_packages_file_option_test: Fail, OK # CompileTimeErrors intentionally
+package/scenarios/invalid/*: Fail, OK # CompileTimeErrors intentionally
 
 issue14236_test: Pass # Do not remove this line. It serves as a marker for Issue 14516 comment #4.
 
@@ -16,6 +20,7 @@ javascript_compatibility_errors_test/none: Fail, OK  # Not possible to exclude o
 [ $runtime == vm ]
 package/package_isolate_test: Fail # Issue 12474
 io/observatory_test: Fail
+package/scenarios/invalid/same_package_twice_test: Pass # Issue 24119
 
 [ $runtime == vm && $checked ]
 # These tests have type errors on purpose.
@@ -146,6 +151,10 @@ io/secure_socket_argument_test: StaticWarning
 io/stdout_bad_argument_test: StaticWarning
 package/package1_test: StaticWarning
 package/package_test: StaticWarning
+package/scenarios/packages_dir_only/packages_dir_only_test: StaticWarning
+package/scenarios/packages_file_only/packages_file_only_test: StaticWarning
+package/scenarios/both_dir_and_file/prefers_packages_file_test: StaticWarning
+package/scenarios/packages_file_in_parent/sub/packages_file_in_parent_test: StaticWarning
 typed_data_test: StaticWarning
 typed_data_view_test: StaticWarning
 javascript_compatibility_errors_test: Skip
@@ -154,6 +163,14 @@ javascript_compatibility_warnings_test: Skip
 [ $compiler == dart2analyzer ]
 package/package1_test: CompileTimeError
 package/package_test: CompileTimeError
+package/scenarios/packages_dir_only/packages_dir_only_test: CompileTimeError
+package/scenarios/packages_file_only/packages_file_only_test: CompileTimeError
+package/scenarios/both_dir_and_file/prefers_packages_file_test: CompileTimeError
+package/scenarios/packages_file_in_parent/sub/packages_file_in_parent_test: CompileTimeError
+package/scenarios/invalid/non_existent_packages_file_test: Crash, OK # Analyzer exits on invalid package config
+package/scenarios/invalid/invalid_utf8_test: Crash, OK # Analyzer exits on invalid package config
+package/scenarios/invalid/invalid_package_name_test: Crash, OK # Analyzer exits on invalid package config
+package/scenarios/invalid/same_package_twice_test: Crash, OK # Analyzer exits on invalid package config
 
 [ $system == windows ]
 io/skipping_dart2js_compilations_test: Fail # Issue 19551.
@@ -178,4 +195,4 @@ io/file_test: Crash # (static Iterable<Str...  cannot handle sync*/async* functi
 io/http_client_connect_test: Crash # (static Iterable<Str...  cannot handle sync*/async* functions
 io/observatory_test: Crash # (static Iterable<Str...  cannot handle sync*/async* functions
 io/skipping_dart2js_compilations_test: Crash # (static Iterable<Str...  cannot handle sync*/async* functions
-priority_queue_stress_test: RuntimeError # Cannot read property 'any$1' of undefined
+priority_queue_stress_test: RuntimeError # Cannot read property 'length' of undefined

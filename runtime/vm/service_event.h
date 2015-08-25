@@ -15,6 +15,7 @@ class ServiceEvent {
  public:
   enum EventKind {
     kIsolateStart,       // New isolate has started
+    kIsolateRunnable,    // Isolate is ready to run
     kIsolateExit,        // Isolate has exited
     kIsolateUpdate,      // Isolate identity information has changed
 
@@ -59,6 +60,7 @@ class ServiceEvent {
         top_frame_(NULL),
         exception_(NULL),
         async_continuation_(NULL),
+        at_async_jump_(false),
         inspectee_(NULL),
         gc_stats_(NULL),
         bytes_(NULL),
@@ -122,6 +124,13 @@ class ServiceEvent {
     async_continuation_ = closure;
   }
 
+  bool at_async_jump() const {
+    return at_async_jump_;
+  }
+  void set_at_async_jump(bool value) {
+    at_async_jump_ = value;
+  }
+
   const Object* inspectee() const {
     return inspectee_;
   }
@@ -168,6 +177,7 @@ class ServiceEvent {
   ActivationFrame* top_frame_;
   const Object* exception_;
   const Object* async_continuation_;
+  bool at_async_jump_;
   const Object* inspectee_;
   const Heap::GCStats* gc_stats_;
   const uint8_t* bytes_;

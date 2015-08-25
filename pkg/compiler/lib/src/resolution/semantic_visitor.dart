@@ -6,24 +6,19 @@ library dart2js.semantics_visitor;
 
 import '../constants/expressions.dart';
 import '../dart_types.dart';
-import '../diagnostics/invariant.dart' show
-    invariant;
-import '../diagnostics/messages.dart' show
-    MessageKind;
 import '../diagnostics/spannable.dart' show
     Spannable,
     SpannableAssertionFailure;
-import '../elements/elements.dart';
 import '../tree/tree.dart';
+import '../elements/elements.dart';
 import '../universe/universe.dart';
 
-import 'access_semantics.dart';
 import 'operators.dart';
-import 'resolution.dart';
+import 'send_resolver.dart';
 import 'send_structure.dart';
+import 'tree_elements.dart';
 
 part 'semantic_visitor_mixins.dart';
-part 'send_resolver.dart';
 
 /// Mixin that couples a [SendResolverMixin] to a [SemanticSendVisitor] in a
 /// [Visitor].
@@ -49,7 +44,7 @@ abstract class SemanticSendResolvedMixin<R, A>
     // TODO(johnniwinther): Support argument.
     A arg = null;
 
-    SendStructure structure = computeSendStructure(node);
+    SendStructure structure = elements.getSendStructure(node);
     if (structure == null) {
       return internalError(node, 'No structure for $node');
     } else {
@@ -328,7 +323,7 @@ abstract class SemanticSendVisitor<R, A> {
   R visitDynamicPropertyGet(
       Send node,
       Node receiver,
-      Selector selector,
+      Name name,
       A arg);
 
   /// Conditional (if not null) getter call on [receiver] of the property
@@ -341,7 +336,7 @@ abstract class SemanticSendVisitor<R, A> {
   R visitIfNotNullDynamicPropertyGet(
       Send node,
       Node receiver,
-      Selector selector,
+      Name name,
       A arg);
 
   /// Setter call on [receiver] with argument [rhs] of the property defined by
@@ -356,7 +351,7 @@ abstract class SemanticSendVisitor<R, A> {
   R visitDynamicPropertySet(
       SendSet node,
       Node receiver,
-      Selector selector,
+      Name name,
       Node rhs,
       A arg);
 
@@ -372,7 +367,7 @@ abstract class SemanticSendVisitor<R, A> {
   R visitIfNotNullDynamicPropertySet(
       SendSet node,
       Node receiver,
-      Selector selector,
+      Name name,
       Node rhs,
       A arg);
 
@@ -424,7 +419,7 @@ abstract class SemanticSendVisitor<R, A> {
   ///
   R visitThisPropertyGet(
       Send node,
-      Selector selector,
+      Name name,
       A arg);
 
   /// Setter call on `this` with argument [rhs] of the property defined by
@@ -444,7 +439,7 @@ abstract class SemanticSendVisitor<R, A> {
   ///
   R visitThisPropertySet(
       SendSet node,
-      Selector selector,
+      Name name,
       Node rhs,
       A arg);
 
@@ -746,7 +741,7 @@ abstract class SemanticSendVisitor<R, A> {
       Send node,
       Node expression,
       NodeList arguments,
-      Selector selector,
+      CallStructure callStructure,
       A arg);
 
   /// Read of the static [field].
@@ -1880,10 +1875,9 @@ abstract class SemanticSendVisitor<R, A> {
   R visitDynamicPropertyCompound(
       Send node,
       Node receiver,
+      Name name,
       AssignmentOperator operator,
       Node rhs,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Compound assignment expression of [rhs] with [operator] of the property on
@@ -1897,10 +1891,9 @@ abstract class SemanticSendVisitor<R, A> {
   R visitIfNotNullDynamicPropertyCompound(
       Send node,
       Node receiver,
+      Name name,
       AssignmentOperator operator,
       Node rhs,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Compound assignment expression of [rhs] with [operator] of the property on
@@ -1921,10 +1914,9 @@ abstract class SemanticSendVisitor<R, A> {
   ///
   R visitThisPropertyCompound(
       Send node,
+      Name name,
       AssignmentOperator operator,
       Node rhs,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Compound assignment expression of [rhs] with [operator] on a [parameter].
@@ -2624,9 +2616,8 @@ abstract class SemanticSendVisitor<R, A> {
   R visitDynamicPropertyPrefix(
       Send node,
       Node receiver,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Prefix expression with [operator] of the property on a possibly null
@@ -2640,9 +2631,8 @@ abstract class SemanticSendVisitor<R, A> {
   R visitIfNotNullDynamicPropertyPrefix(
       Send node,
       Node receiver,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Prefix expression with [operator] on a [parameter].
@@ -2733,9 +2723,8 @@ abstract class SemanticSendVisitor<R, A> {
   ///
   R visitThisPropertyPrefix(
       Send node,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Prefix expression with [operator] on a static [field].
@@ -3111,9 +3100,8 @@ abstract class SemanticSendVisitor<R, A> {
   R visitDynamicPropertyPostfix(
       Send node,
       Node receiver,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Postfix expression with [operator] of the property on a possibly null
@@ -3127,9 +3115,8 @@ abstract class SemanticSendVisitor<R, A> {
   R visitIfNotNullDynamicPropertyPostfix(
       Send node,
       Node receiver,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Postfix expression with [operator] on a [parameter].
@@ -3220,9 +3207,8 @@ abstract class SemanticSendVisitor<R, A> {
   ///
   R visitThisPropertyPostfix(
       Send node,
+      Name name,
       IncDecOperator operator,
-      Selector getterSelector,
-      Selector setterSelector,
       A arg);
 
   /// Postfix expression with [operator] on a static [field].
@@ -3611,7 +3597,7 @@ abstract class SemanticSendVisitor<R, A> {
       Send node,
       ConstantExpression constant,
       NodeList arguments,
-      CallStructure callStreucture,
+      CallStructure callStructure,
       A arg);
 
   /// Read of the unresolved [element].

@@ -13,6 +13,8 @@ import '../common/backend_api.dart' show
     Backend;
 import '../common/codegen.dart' show
     CodegenWorkItem;
+import '../common/names.dart' show
+    Selectors;
 import '../common/registry.dart' show
     Registry;
 import '../common/resolution.dart' show
@@ -44,7 +46,9 @@ import '../enqueue.dart' show
 import '../library_loader.dart' show
     LoadedLibraries;
 import '../mirror_renamer/mirror_renamer.dart';
-import '../resolution/resolution.dart' show
+import '../resolution/operators.dart' show
+    BinaryOperator;
+import '../resolution/tree_elements.dart' show
     TreeElements,
     TreeElementMapping;
 import '../scanner/scannerlib.dart' show

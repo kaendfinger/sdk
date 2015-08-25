@@ -20,19 +20,28 @@ import '../diagnostics/source_span.dart'
 import '../dart_types.dart';
 import '../diagnostics/diagnostic_listener.dart';
 import '../elements/elements.dart';
-import '../elements/modelx.dart' show FunctionSignatureX;
+import '../elements/modelx.dart' show
+    FunctionSignatureX;
 import '../elements/common.dart';
 import '../elements/visitor.dart';
 import '../io/source_file.dart';
 import '../ordered_typeset.dart';
-import '../resolution/resolution.dart';
 import '../resolution/class_members.dart' as class_members;
-import '../resolution/enum_creator.dart' show AstBuilder;
-import '../scanner/scannerlib.dart' show Token, SEMICOLON_INFO;
+import '../resolution/enum_creator.dart' show
+    AstBuilder;
+import '../resolution/tree_elements.dart' show
+    TreeElements;
+import '../resolution/scope.dart' show
+    Scope;
+import '../scanner/scannerlib.dart' show
+    Token,
+    SEMICOLON_INFO;
 import '../script.dart';
 import '../serialization/constant_serialization.dart';
 import '../tree/tree.dart';
-import '../util/util.dart' show Link, LinkBuilder;
+import '../util/util.dart' show
+    Link,
+    LinkBuilder;
 
 /// Compute a [Link] from an [Iterable].
 Link toLink(Iterable iterable) {
@@ -1224,6 +1233,14 @@ abstract class TypeDeclarationMixin<T extends GenericType>
   List<DartType> _typeVariables;
   T _rawType;
   T _thisType;
+  Name _memberName;
+
+  Name get memberName {
+    if (_memberName == null) {
+      _memberName = new Name(name, library);
+    }
+    return _memberName;
+  }
 
   void _ensureTypes() {
     if (_typeVariables == null) {
@@ -1309,9 +1326,17 @@ class TypeVariableElementZ extends DeserializedElementZ
   TypeDeclarationElement _typeDeclaration;
   TypeVariableType _type;
   DartType _bound;
+  Name _memberName;
 
   TypeVariableElementZ(ObjectDecoder decoder)
       : super(decoder);
+
+  Name get memberName {
+    if (_memberName == null) {
+      _memberName = new Name(name, library);
+    }
+    return _memberName;
+  }
 
   @override
   ElementKind get kind => ElementKind.TYPE_VARIABLE;

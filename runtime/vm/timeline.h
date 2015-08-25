@@ -22,6 +22,30 @@ class TimelineEventBlock;
 class TimelineEventRecorder;
 class TimelineStream;
 
+
+class Timeline : public AllStatic {
+ public:
+  // Initialize timeline system. Not thread safe.
+  static void InitOnce();
+
+  // Shutdown timeline system. Not thread safe.
+  static void Shutdown();
+
+  // Access the global recorder. Not thread safe.
+  static TimelineEventRecorder* recorder();
+
+  static bool EnableStreamByDefault(const char* stream_name);
+
+  static TimelineStream* GetVMStream();
+
+ private:
+  static TimelineEventRecorder* recorder_;
+  static TimelineStream* vm_stream_;
+
+  friend class TimelineRecorderOverride;
+};
+
+
 // You should get a |TimelineEvent| from a |TimelineStream|.
 class TimelineEvent {
  public:
@@ -45,9 +69,8 @@ class TimelineEvent {
     return (event_type() > kNone) && (event_type() < kNumEventTypes);
   }
 
-  // Marks the beginning of an asynchronous operation.
-  // Returns |async_id| which must be passed to |AsyncInstant| and |AsyncEnd|.
-  int64_t AsyncBegin(const char* label);
+  // Marks the beginning of an asynchronous operation with |async_id|.
+  void AsyncBegin(const char* label, int64_t async_id);
   // Marks an instantaneous event associated with |async_id|.
   void AsyncInstant(const char* label,
                     int64_t async_id);
@@ -139,8 +162,9 @@ class TimelineEvent {
   intptr_t arguments_length_;
   uword state_;
   const char* label_;
-  TimelineStream* stream_;
+  const char* category_;
   ThreadId thread_;
+  Isolate* isolate_;
 
   void FreeArguments();
 
@@ -185,33 +209,13 @@ class TimelineStream {
     enabled_ = enabled;
   }
 
-  TimelineEventRecorder* recorder() const {
-    return recorder_;
-  }
-
-  // TODO(johnmccutchan): Disallow setting recorder after Init?
-  void set_recorder(TimelineEventRecorder* recorder) {
-    recorder_ = recorder;
-  }
-
-  // Records an event. Will return |NULL| if not enabled. The returned
-  // |TimelineEvent| is in an undefined state and must be initialized.
-  // |obj| is associated with the returned |TimelineEvent|.
-  TimelineEvent* StartEvent(const Object& obj);
-
   // Records an event. Will return |NULL| if not enabled. The returned
   // |TimelineEvent| is in an undefined state and must be initialized.
   TimelineEvent* StartEvent();
 
-  void CompleteEvent(TimelineEvent* event);
-
-  int64_t GetNextSeq();
-
  private:
-  TimelineEventRecorder* recorder_;
   const char* name_;
   bool enabled_;
-  int64_t seq_;
 };
 
 
@@ -224,18 +228,21 @@ class TimelineStream {
   V(Isolate, false)                                                            \
 
 
-#define TIMELINE_FUNCTION_COMPILATION_DURATION(isolate, suffix, function)      \
-  TimelineDurationScope tds(isolate,                                           \
-                            isolate->GetCompilerStream(),                      \
+#define TIMELINE_FUNCTION_COMPILATION_DURATION(thread, suffix, function)       \
+  TimelineDurationScope tds(thread,                                            \
+                            thread->isolate()->GetCompilerStream(),            \
                             "Compile" suffix);                                 \
   if (tds.enabled()) {                                                         \
     tds.SetNumArguments(1);                                                    \
     tds.CopyArgument(                                                          \
         0,                                                                     \
         "function",                                                            \
-        const_cast<char*>(function.QualifiedUserVisibleNameCString()));        \
+        const_cast<char*>(function.ToLibNamePrefixedQualifiedCString()));      \
   }
 
+
+// TODO(johnmccutchan): TimelineDurationScope should only allocate the
+// event when complete.
 class TimelineDurationScope : public StackResource {
  public:
   TimelineDurationScope(Isolate* isolate,
@@ -249,6 +256,12 @@ class TimelineDurationScope : public StackResource {
                         TimelineStream* stream,
                         const char* label)
       : StackResource(thread) {
+    Init(stream, label);
+  }
+
+  TimelineDurationScope(TimelineStream* stream,
+                        const char* label)
+      : StackResource(reinterpret_cast<Thread*>(NULL)) {
     Init(stream, label);
   }
 
@@ -358,6 +371,16 @@ class TimelineEventBlock {
   // Call Reset on all events and set length to 0.
   void Reset();
 
+  // Only safe to access under the recorder's lock.
+  bool open() const {
+    return open_;
+  }
+
+  // Only safe to access under the recorder's lock.
+  Isolate* isolate() const {
+    return isolate_;
+  }
+
  protected:
   TimelineEvent* StartEvent();
 
@@ -366,12 +389,63 @@ class TimelineEventBlock {
   intptr_t length_;
   intptr_t block_index_;
 
-  friend class TimelineEventEndlessRecorder;
+  // Only accessed under the recorder's lock.
+  Isolate* isolate_;
+  bool open_;
+
+  void Open(Isolate* isolate);
+  void Finish();
+
+  friend class ThreadRegistry;
   friend class TimelineEventRecorder;
+  friend class TimelineEventRingRecorder;
+  friend class TimelineEventEndlessRecorder;
   friend class TimelineTestHelper;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(TimelineEventBlock);
+};
+
+
+class TimelineEventFilter : public ValueObject {
+ public:
+  TimelineEventFilter();
+  virtual ~TimelineEventFilter();
+
+  virtual bool IncludeBlock(TimelineEventBlock* block) {
+    if (block == NULL) {
+      return false;
+    }
+    // Not empty and not open.
+    return !block->IsEmpty() && !block->open();
+  }
+
+  virtual bool IncludeEvent(TimelineEvent* event) {
+    if (event == NULL) {
+      return false;
+    }
+    return event->IsValid();
+  }
+
+ private:
+};
+
+
+class IsolateTimelineEventFilter : public TimelineEventFilter {
+ public:
+  explicit IsolateTimelineEventFilter(Isolate* isolate);
+
+  bool IncludeBlock(TimelineEventBlock* block) {
+    if (block == NULL) {
+      return false;
+    }
+    // Not empty, not open, and isolate match.
+    return !block->IsEmpty() &&
+           (block->isolate() == isolate_);
+  }
+
+ private:
+  Isolate* isolate_;
 };
 
 
@@ -381,29 +455,40 @@ class TimelineEventRecorder {
   TimelineEventRecorder();
   virtual ~TimelineEventRecorder() {}
 
-  // Interface method(s) which must be implemented.
-  virtual void PrintJSON(JSONStream* js) = 0;
-  virtual TimelineEventBlock* GetNewBlock() = 0;
-  virtual TimelineEventBlock* GetHeadBlock() = 0;
+  TimelineEventBlock* GetNewBlock();
 
-  void WriteTo(const char* directory);
+  // Interface method(s) which must be implemented.
+  virtual void PrintJSON(JSONStream* js, TimelineEventFilter* filter) = 0;
+
+  int64_t GetNextAsyncId();
 
  protected:
+  void WriteTo(const char* directory);
+
   // Interface method(s) which must be implemented.
-  virtual void VisitObjectPointers(ObjectPointerVisitor* visitor) = 0;
-  virtual TimelineEvent* StartEvent(const Object& object) = 0;
   virtual TimelineEvent* StartEvent() = 0;
   virtual void CompleteEvent(TimelineEvent* event) = 0;
+  virtual TimelineEventBlock* GetHeadBlockLocked() = 0;
+  virtual TimelineEventBlock* GetNewBlockLocked(Isolate* isolate) = 0;
 
   // Utility method(s).
   void PrintJSONMeta(JSONArray* array) const;
   TimelineEvent* ThreadBlockStartEvent();
+  TimelineEvent* GlobalBlockStartEvent();
 
   Mutex lock_;
+  // Only accessed under |lock_|.
+  TimelineEventBlock* global_block_;
+  void FinishGlobalBlock();
 
+  uintptr_t async_id_;
+
+  friend class ThreadRegistry;
+  friend class TimelineEvent;
   friend class TimelineEventBlockIterator;
   friend class TimelineStream;
   friend class TimelineTestHelper;
+  friend class Timeline;
   friend class Isolate;
 
  private:
@@ -412,7 +497,6 @@ class TimelineEventRecorder {
 
 
 // A recorder that stores events in a ring buffer of fixed capacity.
-// This recorder does track Dart objects.
 class TimelineEventRingRecorder : public TimelineEventRecorder {
  public:
   static const intptr_t kDefaultCapacity = 8192;
@@ -420,23 +504,18 @@ class TimelineEventRingRecorder : public TimelineEventRecorder {
   explicit TimelineEventRingRecorder(intptr_t capacity = kDefaultCapacity);
   ~TimelineEventRingRecorder();
 
-  void PrintJSON(JSONStream* js);
-  TimelineEventBlock* GetNewBlock();
-  TimelineEventBlock* GetHeadBlock();
+  void PrintJSON(JSONStream* js, TimelineEventFilter* filter);
 
  protected:
-  void VisitObjectPointers(ObjectPointerVisitor* visitor);
-  TimelineEvent* StartEvent(const Object& object);
   TimelineEvent* StartEvent();
   void CompleteEvent(TimelineEvent* event);
-
+  TimelineEventBlock* GetHeadBlockLocked();
   intptr_t FindOldestBlockIndex() const;
-  TimelineEventBlock* GetNewBlockLocked();
+  TimelineEventBlock* GetNewBlockLocked(Isolate* isolate);
 
-  void PrintJSONEvents(JSONArray* array) const;
+  void PrintJSONEvents(JSONArray* array, TimelineEventFilter* filter) const;
 
   TimelineEventBlock** blocks_;
-  RawArray* event_objects_;
   intptr_t capacity_;
   intptr_t num_blocks_;
   intptr_t block_cursor_;
@@ -444,62 +523,48 @@ class TimelineEventRingRecorder : public TimelineEventRecorder {
 
 
 // An abstract recorder that calls |StreamEvent| whenever an event is complete.
-// This recorder does not track Dart objects.
 class TimelineEventStreamingRecorder : public TimelineEventRecorder {
  public:
   TimelineEventStreamingRecorder();
   ~TimelineEventStreamingRecorder();
 
-  void PrintJSON(JSONStream* js);
-  TimelineEventBlock* GetNewBlock() {
-    return NULL;
-  }
-  TimelineEventBlock* GetHeadBlock() {
-    return NULL;
-  }
+  void PrintJSON(JSONStream* js, TimelineEventFilter* filter);
 
   // Called when |event| is ready to be streamed. It is unsafe to keep a
   // reference to |event| as it may be freed as soon as this function returns.
   virtual void StreamEvent(TimelineEvent* event) = 0;
 
  protected:
-  void VisitObjectPointers(ObjectPointerVisitor* visitor);
-  TimelineEvent* StartEvent(const Object& object);
+  TimelineEventBlock* GetNewBlockLocked(Isolate* isolate) {
+    return NULL;
+  }
+  TimelineEventBlock* GetHeadBlockLocked() {
+    return NULL;
+  }
   TimelineEvent* StartEvent();
   void CompleteEvent(TimelineEvent* event);
 };
 
 
 // A recorder that stores events in chains of blocks of events.
-// This recorder does not track Dart objects.
 // NOTE: This recorder will continue to allocate blocks until it exhausts
 // memory.
 class TimelineEventEndlessRecorder : public TimelineEventRecorder {
  public:
   TimelineEventEndlessRecorder();
 
-  // Acquire a new block of events.
-  // Takes a lock.
-  // Recorder owns the block and it should be filled by only one thread.
-  TimelineEventBlock* GetNewBlock();
-
-  TimelineEventBlock* GetHeadBlock();
-
-  // It is expected that this function is only called when an isolate is
-  // shutting itself down.
   // NOTE: Calling this while threads are filling in their blocks is not safe
   // and there are no checks in place to ensure that doesn't happen.
   // TODO(koda): Add isolate count to |ThreadRegistry| and verify that it is 1.
-  void PrintJSON(JSONStream* js);
+  void PrintJSON(JSONStream* js, TimelineEventFilter* filter);
 
  protected:
-  void VisitObjectPointers(ObjectPointerVisitor* visitor);
-  TimelineEvent* StartEvent(const Object& object);
   TimelineEvent* StartEvent();
   void CompleteEvent(TimelineEvent* event);
+  TimelineEventBlock* GetNewBlockLocked(Isolate* isolate);
+  TimelineEventBlock* GetHeadBlockLocked();
 
-  TimelineEventBlock* GetNewBlockLocked();
-  void PrintJSONEvents(JSONArray* array) const;
+  void PrintJSONEvents(JSONArray* array, TimelineEventFilter* filter) const;
 
   // Useful only for testing. Only works for one thread.
   void Clear();

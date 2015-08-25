@@ -237,6 +237,9 @@ class AnalysisContextFactory {
     // Stream
     ClassElementImpl streamElement =
         ElementFactory.classElement2("Stream", ["T"]);
+    streamElement.constructors = <ConstructorElement>[
+      ElementFactory.constructorElement2(streamElement, null)
+    ];
     DartType returnType = streamSubscriptionElement.type
         .substitute4(streamElement.type.typeArguments);
     List<DartType> parameterTypes = <DartType>[
@@ -3091,6 +3094,9 @@ main() {
   }
 
   void test_isDouble() {
+    AnalysisOptionsImpl options = new AnalysisOptionsImpl();
+    options.dart2jsHint = true;
+    resetWithOptions(options);
     Source source = addSource("var v = 1 is double;");
     computeLibrarySourceErrors(source);
     assertErrors(source, [HintCode.IS_DOUBLE]);
@@ -3098,6 +3104,9 @@ main() {
   }
 
   void test_isNotDouble() {
+    AnalysisOptionsImpl options = new AnalysisOptionsImpl();
+    options.dart2jsHint = true;
+    resetWithOptions(options);
     Source source = addSource("var v = 1 is! double;");
     computeLibrarySourceErrors(source);
     assertErrors(source, [HintCode.IS_NOT_DOUBLE]);

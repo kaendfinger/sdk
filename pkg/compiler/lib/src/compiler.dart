@@ -18,6 +18,8 @@ import 'common/backend_api.dart' show
 import 'common/codegen.dart' show
     CodegenRegistry,
     CodegenWorkItem;
+import 'common/names.dart' show
+    Identifiers;
 import 'common/registry.dart' show
     Registry;
 import 'common/resolution.dart' show
@@ -90,9 +92,11 @@ import 'null_compiler_output.dart' show
     NullSink;
 import 'patch_parser.dart' show
     PatchParserTask;
+import 'resolution/registry.dart' show
+    ResolutionRegistry;
 import 'resolution/resolution.dart' show
-    ResolutionRegistry,
-    ResolverTask,
+    ResolverTask;
+import 'resolution/tree_elements.dart' show
     TreeElementMapping;
 import 'scanner/token_map.dart' show
     TokenMap;
@@ -119,6 +123,7 @@ import 'typechecker.dart' show
     TypeCheckerTask;
 import 'types/types.dart' as ti;
 import 'universe/universe.dart' show
+    CallStructure,
     Selector,
     Universe;
 import 'util/characters.dart' show $_;
@@ -165,7 +170,7 @@ abstract class Compiler implements DiagnosticListener {
    */
   // TODO(johnniwinther): This should not be a [ResolutionRegistry].
   final Registry mirrorDependencies =
-      new ResolutionRegistry.internal(null, new TreeElementMapping(null));
+      new ResolutionRegistry(null, new TreeElementMapping(null));
 
   final bool enableMinification;
 
@@ -292,6 +297,7 @@ abstract class Compiler implements DiagnosticListener {
   ClassElement get numClass => _coreTypes.numClass;
   ClassElement get intClass => _coreTypes.intClass;
   ClassElement get doubleClass => _coreTypes.doubleClass;
+  ClassElement get resourceClass => _coreTypes.resourceClass;
   ClassElement get stringClass => _coreTypes.stringClass;
   ClassElement get functionClass => _coreTypes.functionClass;
   ClassElement get nullClass => _coreTypes.nullClass;
@@ -435,29 +441,14 @@ abstract class Compiler implements DiagnosticListener {
   /// A customizable filter that is applied to enqueued work items.
   QueueFilter enqueuerFilter = new QueueFilter();
 
-  static const String MAIN = 'main';
-  static const String CALL_OPERATOR_NAME = 'call';
-  static const String NO_SUCH_METHOD = 'noSuchMethod';
-  static const int NO_SUCH_METHOD_ARG_COUNT = 1;
+  final Selector symbolValidatedConstructorSelector = new Selector.call(
+      const PublicName('validated'), CallStructure.ONE_ARG);
+
   static const String CREATE_INVOCATION_MIRROR =
       'createInvocationMirror';
-  static const String FROM_ENVIRONMENT = 'fromEnvironment';
-
-  static const String RUNTIME_TYPE = 'runtimeType';
 
   static const String UNDETERMINED_BUILD_ID =
       "build number could not be determined";
-
-  final Selector iteratorSelector =
-      new Selector.getter('iterator', null);
-  final Selector currentSelector =
-      new Selector.getter('current', null);
-  final Selector moveNextSelector =
-      new Selector.call('moveNext', null, 0);
-  final Selector noSuchMethodSelector = new Selector.call(
-      Compiler.NO_SUCH_METHOD, null, Compiler.NO_SUCH_METHOD_ARG_COUNT);
-  final Selector symbolValidatedConstructorSelector = new Selector.call(
-      'validated', null, 1);
 
   bool enabledRuntimeType = false;
   bool enabledFunctionApply = false;
@@ -898,13 +889,13 @@ abstract class Compiler implements DiagnosticListener {
     } else if (mirrorsUsedClass == cls) {
       mirrorsUsedConstructor = cls.constructors.head;
     } else if (intClass == cls) {
-      intEnvironment = intClass.lookupConstructor(FROM_ENVIRONMENT);
+      intEnvironment = intClass.lookupConstructor(Identifiers.fromEnvironment);
     } else if (stringClass == cls) {
       stringEnvironment =
-          stringClass.lookupConstructor(FROM_ENVIRONMENT);
+          stringClass.lookupConstructor(Identifiers.fromEnvironment);
     } else if (boolClass == cls) {
       boolEnvironment =
-          boolClass.lookupConstructor(FROM_ENVIRONMENT);
+          boolClass.lookupConstructor(Identifiers.fromEnvironment);
     }
   }
 
@@ -922,6 +913,7 @@ abstract class Compiler implements DiagnosticListener {
     _coreTypes.numClass = lookupCoreClass('num');
     _coreTypes.intClass = lookupCoreClass('int');
     _coreTypes.doubleClass = lookupCoreClass('double');
+    _coreTypes.resourceClass = lookupCoreClass('Resource');
     _coreTypes.stringClass = lookupCoreClass('String');
     _coreTypes.functionClass = lookupCoreClass('Function');
     _coreTypes.listClass = lookupCoreClass('List');
@@ -992,30 +984,33 @@ abstract class Compiler implements DiagnosticListener {
   void computeMain() {
     if (mainApp == null) return;
 
-    Element main = mainApp.findExported(MAIN);
+    Element main = mainApp.findExported(Identifiers.main);
     ErroneousElement errorElement = null;
     if (main == null) {
       if (analyzeOnly) {
         if (!analyzeAll) {
           errorElement = new ErroneousElementX(
-              MessageKind.CONSIDER_ANALYZE_ALL, {'main': MAIN}, MAIN, mainApp);
+              MessageKind.CONSIDER_ANALYZE_ALL, {'main': Identifiers.main},
+              Identifiers.main, mainApp);
         }
       } else {
         // Compilation requires a main method.
         errorElement = new ErroneousElementX(
-            MessageKind.MISSING_MAIN, {'main': MAIN}, MAIN, mainApp);
+            MessageKind.MISSING_MAIN, {'main': Identifiers.main},
+            Identifiers.main, mainApp);
       }
       mainFunction = backend.helperForMissingMain();
     } else if (main.isErroneous && main.isSynthesized) {
       if (main is ErroneousElement) {
         errorElement = main;
       } else {
-        internalError(main, 'Problem with $MAIN.');
+        internalError(main, 'Problem with ${Identifiers.main}.');
       }
       mainFunction = backend.helperForBadMain();
     } else if (!main.isFunction) {
       errorElement = new ErroneousElementX(
-          MessageKind.MAIN_NOT_A_FUNCTION, {'main': MAIN}, MAIN, main);
+          MessageKind.MAIN_NOT_A_FUNCTION, {'main': Identifiers.main},
+          Identifiers.main, main);
       mainFunction = backend.helperForBadMain();
     } else {
       mainFunction = main;
@@ -1026,7 +1021,8 @@ abstract class Compiler implements DiagnosticListener {
         parameters.orderedForEachParameter((Element parameter) {
           if (index++ < 2) return;
           errorElement = new ErroneousElementX(
-              MessageKind.MAIN_WITH_EXTRA_PARAMETER, {'main': MAIN}, MAIN,
+              MessageKind.MAIN_WITH_EXTRA_PARAMETER, {'main': Identifiers.main},
+              Identifiers.main,
               parameter);
           mainFunction = backend.helperForMainArity();
           // Don't warn about main not being used:
@@ -1036,7 +1032,7 @@ abstract class Compiler implements DiagnosticListener {
     }
     if (mainFunction == null) {
       if (errorElement == null && !analyzeOnly && !analyzeAll) {
-        internalError(mainApp, "Problem with '$MAIN'.");
+        internalError(mainApp, "Problem with '${Identifiers.main}'.");
       } else {
         mainFunction = errorElement;
       }
@@ -1684,6 +1680,7 @@ class _CompilerCoreTypes implements CoreTypes {
   ClassElement futureClass;
   ClassElement iterableClass;
   ClassElement streamClass;
+  ClassElement resourceClass;
 
   _CompilerCoreTypes(this.compiler);
 
@@ -1701,6 +1698,9 @@ class _CompilerCoreTypes implements CoreTypes {
 
   @override
   InterfaceType get intType => intClass.computeType(compiler);
+
+  @override
+  InterfaceType get resourceType => resourceClass.computeType(compiler);
 
   @override
   InterfaceType listType([DartType elementType]) {

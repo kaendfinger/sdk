@@ -1510,9 +1510,10 @@ DART_EXPORT Dart_Handle Dart_CreateSnapshot(
     uint8_t** isolate_snapshot_buffer,
     intptr_t* isolate_snapshot_size) {
   ASSERT(FLAG_load_deferred_eagerly);
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_creating_snapshot);
+  TIMERSCOPE(thread, time_creating_snapshot);
   if (vm_isolate_snapshot_buffer != NULL &&
       vm_isolate_snapshot_size == NULL) {
     RETURN_NULL_ERROR(vm_isolate_snapshot_size);
@@ -1538,7 +1539,8 @@ DART_EXPORT Dart_Handle Dart_CreateSnapshot(
   isolate->object_store()->set_root_library(Library::Handle(isolate));
   FullSnapshotWriter writer(vm_isolate_snapshot_buffer,
                             isolate_snapshot_buffer,
-                            ApiReallocate);
+                            ApiReallocate,
+                            false /* snapshot_code */);
   writer.WriteFullSnapshot();
   *vm_isolate_snapshot_size = writer.VmIsolateSnapshotSize();
   *isolate_snapshot_size = writer.IsolateSnapshotSize();
@@ -1549,9 +1551,10 @@ DART_EXPORT Dart_Handle Dart_CreateSnapshot(
 static Dart_Handle createLibrarySnapshot(Dart_Handle library,
                                          uint8_t** buffer,
                                          intptr_t* size) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_creating_snapshot);
+  TIMERSCOPE(thread, time_creating_snapshot);
   if (buffer == NULL) {
     RETURN_NULL_ERROR(buffer);
   }
@@ -1601,7 +1604,13 @@ DART_EXPORT void Dart_InterruptIsolate(Dart_Isolate isolate) {
   }
   // TODO(16615): Validate isolate parameter.
   Isolate* iso = reinterpret_cast<Isolate*>(isolate);
+  // Schedule the interrupt. The isolate will notice this bit being set if it
+  // is currently executing in Dart code.
   iso->ScheduleInterrupts(Isolate::kApiInterrupt);
+  // If the isolate is blocked on the message queue, we post a dummy message
+  // to the isolate's main port. The message will be ultimately ignored, but as
+  // part of handling the message the interrupt bit which was set above will be
+  // honored.
   // Can't use Dart_Post() since there isn't a current isolate.
   Dart_CObject api_null = { Dart_CObject_kNull , { 0 } };
   Dart_PostCObject(iso->main_port(), &api_null);
@@ -4176,12 +4185,13 @@ DART_EXPORT Dart_Handle Dart_Invoke(Dart_Handle target,
                                     Dart_Handle name,
                                     int number_of_arguments,
                                     Dart_Handle* arguments) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
   CHECK_CALLBACK_STATE(isolate);
   // TODO(turnidge): This is a bit simplistic.  It overcounts when
   // other operations (gc, compilation) are active.
-  TIMERSCOPE(isolate, time_dart_execution);
+  TIMERSCOPE(thread, time_dart_execution);
 
   const String& function_name = Api::UnwrapStringHandle(isolate, name);
   if (function_name.IsNull()) {
@@ -5195,9 +5205,10 @@ DART_EXPORT Dart_Handle Dart_LoadScript(Dart_Handle url,
                                         Dart_Handle source,
                                         intptr_t line_offset,
                                         intptr_t column_offset) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_script_loading);
+  TIMERSCOPE(thread, time_script_loading);
   const String& url_str = Api::UnwrapStringHandle(isolate, url);
   if (url_str.IsNull()) {
     RETURN_TYPE_ERROR(isolate, url, String);
@@ -5241,9 +5252,10 @@ DART_EXPORT Dart_Handle Dart_LoadScript(Dart_Handle url,
 
 DART_EXPORT Dart_Handle Dart_LoadScriptFromSnapshot(const uint8_t* buffer,
                                                     intptr_t buffer_len) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_script_loading);
+  TIMERSCOPE(thread, time_script_loading);
   StackZone zone(isolate);
   if (buffer == NULL) {
     RETURN_NULL_ERROR(buffer);
@@ -5454,9 +5466,10 @@ DART_EXPORT Dart_Handle Dart_LoadLibrary(Dart_Handle url,
                                          Dart_Handle source,
                                          intptr_t line_offset,
                                          intptr_t column_offset) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_script_loading);
+  TIMERSCOPE(thread, time_script_loading);
   const String& url_str = Api::UnwrapStringHandle(isolate, url);
   if (url_str.IsNull()) {
     RETURN_TYPE_ERROR(isolate, url, String);
@@ -5560,9 +5573,10 @@ DART_EXPORT Dart_Handle Dart_LoadSource(Dart_Handle library,
                                         Dart_Handle source,
                                         intptr_t line_offset,
                                         intptr_t column_offset) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_script_loading);
+  TIMERSCOPE(thread, time_script_loading);
   const Library& lib = Api::UnwrapLibraryHandle(isolate, library);
   if (lib.IsNull()) {
     RETURN_TYPE_ERROR(isolate, library, Library);
@@ -5599,9 +5613,10 @@ DART_EXPORT Dart_Handle Dart_LoadSource(Dart_Handle library,
 DART_EXPORT Dart_Handle Dart_LibraryLoadPatch(Dart_Handle library,
                                               Dart_Handle url,
                                               Dart_Handle patch_source) {
-  Isolate* isolate = Isolate::Current();
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
   DARTSCOPE(isolate);
-  TIMERSCOPE(isolate, time_script_loading);
+  TIMERSCOPE(thread, time_script_loading);
   const Library& lib = Api::UnwrapLibraryHandle(isolate, library);
   if (lib.IsNull()) {
     RETURN_TYPE_ERROR(isolate, library, Library);
@@ -5854,7 +5869,7 @@ DART_EXPORT bool Dart_TimelineGetTrace(Dart_StreamConsumer consumer,
   if (consumer == NULL) {
     return false;
   }
-  TimelineEventRecorder* timeline_recorder = isolate->timeline_event_recorder();
+  TimelineEventRecorder* timeline_recorder = Timeline::recorder();
   if (timeline_recorder == NULL) {
     // Nothing has been recorded.
     return false;
@@ -5862,7 +5877,8 @@ DART_EXPORT bool Dart_TimelineGetTrace(Dart_StreamConsumer consumer,
   // Suspend execution of other threads while serializing to JSON.
   isolate->thread_registry()->SafepointThreads();
   JSONStream js;
-  timeline_recorder->PrintJSON(&js);
+  IsolateTimelineEventFilter filter(isolate);
+  timeline_recorder->PrintJSON(&js, &filter);
   // Resume execution of other threads.
   isolate->thread_registry()->ResumeAllThreads();
 
@@ -5975,7 +5991,10 @@ DART_EXPORT Dart_Handle Dart_TimelineAsyncBegin(const char* label,
   ASSERT(stream != NULL);
   TimelineEvent* event = stream->StartEvent();
   if (event != NULL) {
-    *async_id = event->AsyncBegin(label);
+    TimelineEventRecorder* recorder = Timeline::recorder();
+    ASSERT(recorder != NULL);
+    *async_id = recorder->GetNextAsyncId();
+    event->AsyncBegin(label, *async_id);
     event->Complete();
   }
   return Api::Success();

@@ -3167,6 +3167,47 @@ TEST_CASE(ObjectGroups) {
 }
 
 
+TEST_CASE(DuplicateWeakReferenceSetEntries) {
+  Isolate* isolate = Isolate::Current();
+  Dart_PersistentHandle strong = NULL;
+  Dart_WeakPersistentHandle weak = NULL;  // A weak handle to strong.
+
+  Dart_EnterScope();
+  {
+    DARTSCOPE(isolate);
+
+    // Strong handle to keep the reference set alive.
+    Dart_Handle local = Api::NewHandle(isolate, String::New("string"));
+    strong = Dart_NewPersistentHandle(local);
+    EXPECT_VALID(AsHandle(strong));
+    EXPECT(!Dart_IsNull(AsHandle(strong)));
+    // Corresponding weak handle to use as key and duplicated value.
+    weak = Dart_NewWeakPersistentHandle(local, NULL, 0, NopCallback);
+    EXPECT_VALID(AsHandle(weak));
+    EXPECT(!Dart_IsNull(AsHandle(weak)));
+  }
+  Dart_ExitScope();
+
+  {
+    Dart_EnterScope();
+    // Create the weak reference set.
+    Dart_WeakReferenceSetBuilder builder = Dart_NewWeakReferenceSetBuilder();
+    EXPECT_NOTNULL(builder);
+    // Register the key and the first copy of the value.
+    Dart_WeakReferenceSet set = Dart_NewWeakReferenceSet(builder, weak, weak);
+    EXPECT_NOTNULL(set);
+    // Add the second copy of the value.
+    Dart_Handle result = Dart_AppendValueToWeakReferenceSet(set, weak);
+    EXPECT_VALID(result);
+
+    // Trigger GC to ensure that we can visit duplicate entries in weak
+    // reference sets.
+    isolate->heap()->CollectGarbage(Heap::kNew);
+    Dart_ExitScope();
+  }
+}
+
+
 static Dart_WeakPersistentHandle old_pwph = NULL;
 static Dart_WeakPersistentHandle new_pwph = NULL;
 
@@ -3939,7 +3980,7 @@ TEST_CASE(TypeGetNonParamtericTypes) {
 }
 
 
-TEST_CASE(TypeGetParamterizedTypes) {
+TEST_CASE(TypeGetParameterizedTypes) {
   const char* kScriptChars =
       "class MyClass0<A, B> {\n"
       "}\n"
@@ -9238,9 +9279,10 @@ TEST_CASE(Timeline_Dart_TimelineDuration) {
   // Add a duration event.
   Dart_TimelineDuration("testDurationEvent", 0, 1);
   // Check that it is in the output.
-  TimelineEventRecorder* recorder = isolate->timeline_event_recorder();
+  TimelineEventRecorder* recorder = Timeline::recorder();
   JSONStream js;
-  recorder->PrintJSON(&js);
+  IsolateTimelineEventFilter filter(isolate);
+  recorder->PrintJSON(&js, &filter);
   EXPECT_SUBSTRING("testDurationEvent", js.ToCString());
 }
 
@@ -9253,9 +9295,10 @@ TEST_CASE(Timeline_Dart_TimelineInstant) {
   stream->set_enabled(true);
   Dart_TimelineInstant("testInstantEvent");
   // Check that it is in the output.
-  TimelineEventRecorder* recorder = isolate->timeline_event_recorder();
+  TimelineEventRecorder* recorder = Timeline::recorder();
   JSONStream js;
-  recorder->PrintJSON(&js);
+  IsolateTimelineEventFilter filter(isolate);
+  recorder->PrintJSON(&js, &filter);
   EXPECT_SUBSTRING("testInstantEvent", js.ToCString());
 }
 
@@ -9273,9 +9316,10 @@ TEST_CASE(Timeline_Dart_TimelineAsyncDisabled) {
   // Call Dart_TimelineAsyncEnd with a negative async_id.
   Dart_TimelineAsyncEnd("testAsyncEvent", async_id);
   // Check that testAsync is not in the output.
-  TimelineEventRecorder* recorder = isolate->timeline_event_recorder();
+  TimelineEventRecorder* recorder = Timeline::recorder();
   JSONStream js;
-  recorder->PrintJSON(&js);
+  TimelineEventFilter filter;
+  recorder->PrintJSON(&js, &filter);
   EXPECT_NOTSUBSTRING("testAsyncEvent", js.ToCString());
 }
 
@@ -9294,9 +9338,10 @@ TEST_CASE(Timeline_Dart_TimelineAsync) {
   Dart_TimelineAsyncEnd("testAsyncEvent", async_id);
 
   // Check that it is in the output.
-  TimelineEventRecorder* recorder = isolate->timeline_event_recorder();
+  TimelineEventRecorder* recorder = Timeline::recorder();
   JSONStream js;
-  recorder->PrintJSON(&js);
+  IsolateTimelineEventFilter filter(isolate);
+  recorder->PrintJSON(&js, &filter);
   EXPECT_SUBSTRING("testAsyncEvent", js.ToCString());
 }
 
@@ -9370,7 +9415,7 @@ TEST_CASE(Timeline_Dart_TimelineGetTrace) {
   // Heartbeat test.
   EXPECT_SUBSTRING("\"cat\":\"Compiler\"", buffer);
   EXPECT_SUBSTRING("\"name\":\"CompileFunction\"", buffer);
-  EXPECT_SUBSTRING("\"function\":\"main\"", buffer);
+  EXPECT_SUBSTRING("\"function\":\"::_main\"", buffer);
 
   // Free buffer allocated by AppendStreamConsumer
   free(data.buffer);

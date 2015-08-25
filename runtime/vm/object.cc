@@ -988,7 +988,12 @@ void Object::RegisterPrivateClass(const Class& cls,
 
 
 RawError* Object::Init(Isolate* isolate) {
-  TIMERSCOPE(isolate, time_bootstrap);
+  Thread* thread = Thread::Current();
+  ASSERT(isolate == thread->isolate());
+  TIMERSCOPE(thread, time_bootstrap);
+  TimelineDurationScope tds(isolate,
+                            isolate->GetIsolateStream(),
+                            "Object::Init");
 
 #if defined(DART_NO_SNAPSHOT)
   // Object::Init version when we are running in a version of dart that does
@@ -1079,6 +1084,10 @@ RawError* Object::Init(Isolate* isolate) {
   RegisterPrivateClass(cls, Symbols::_List(), core_lib);
   pending_classes.Add(cls);
   // We cannot use NewNonParameterizedType(cls), because Array is parameterized.
+  // Warning: class _List has not been patched yet. Its declared number of type
+  // parameters is still 0. It will become 1 after patching. The array type
+  // allocated below represents the raw type _List and not _List<E> as we
+  // could expect. Use with caution.
   type ^= Type::New(Object::Handle(isolate, cls.raw()),
                     TypeArguments::Handle(isolate),
                     Scanner::kNoSourcePos);
@@ -1859,29 +1868,17 @@ bool Class::IsInFullSnapshot() const {
 
 RawType* Class::SignatureType() const {
   ASSERT(IsSignatureClass());
-  const Function& function = Function::Handle(signature_function());
+  Zone* zone = Thread::Current()->zone();
+  const Function& function = Function::Handle(zone, signature_function());
   ASSERT(!function.IsNull());
   if (function.signature_class() != raw()) {
     // This class is a function type alias. Return the canonical signature type.
-    const Class& canonical_class = Class::Handle(function.signature_class());
-    return canonical_class.SignatureType();
+    const Class& canonical_signature_class =
+        Class::Handle(zone, function.signature_class());
+    return canonical_signature_class.SignatureType();
   }
-  // Return the first canonical signature type if already computed at class
-  // finalization time. The optimizer may canonicalize instantiated function
-  // types of the same signature class, but these will be added after the
-  // uninstantiated signature class at index 0.
-  Array& signature_types = Array::Handle();
-  signature_types ^= canonical_types();
-  if (signature_types.IsNull()) {
-    set_canonical_types(empty_array());
-    signature_types ^= canonical_types();
-  }
-  // The canonical_types array is initialized to the empty array.
-  ASSERT(!signature_types.IsNull());
-  if (signature_types.Length() > 0) {
-    Type& signature_type = Type::Handle();
-    signature_type ^= signature_types.At(0);
-    ASSERT(!signature_type.IsNull());
+  const Type& signature_type = Type::Handle(zone, CanonicalType());
+  if (!signature_type.IsNull()) {
     return signature_type.raw();
   }
   // A signature class extends class Instance and is parameterized in the same
@@ -1893,13 +1890,9 @@ RawType* Class::SignatureType() const {
   // argument vector. Therefore, we only need to set the type arguments
   // matching the type parameters here.
   const TypeArguments& signature_type_arguments =
-      TypeArguments::Handle(type_parameters());
-  const Type& signature_type = Type::Handle(
-      Type::New(*this, signature_type_arguments, token_pos()));
-
+      TypeArguments::Handle(zone, type_parameters());
   // Return the still unfinalized signature type.
-  ASSERT(!signature_type.IsFinalized());
-  return signature_type.raw();
+  return Type::New(*this, signature_type_arguments, token_pos());
 }
 
 
@@ -2954,6 +2947,7 @@ RawObject* Class::Evaluate(const String& expr,
 
 
 // Ensure that top level parsing of the class has been done.
+// TODO(24109): Migrate interface to Thread*.
 RawError* Class::EnsureIsFinalized(Isolate* isolate) const {
   // Finalized classes have already been parsed.
   if (is_finalized()) {
@@ -2961,9 +2955,12 @@ RawError* Class::EnsureIsFinalized(Isolate* isolate) const {
   }
   ASSERT(isolate != NULL);
   const Error& error = Error::Handle(isolate, Compiler::CompileClass(*this));
-  if (!error.IsNull() && (isolate->long_jump_base() != NULL)) {
-    Report::LongJump(error);
-    UNREACHABLE();
+  if (!error.IsNull()) {
+    ASSERT(isolate == Thread::Current()->isolate());
+    if (Thread::Current()->long_jump_base() != NULL) {
+      Report::LongJump(error);
+      UNREACHABLE();
+    }
   }
   return error.raw();
 }
@@ -3594,20 +3591,32 @@ void Class::set_canonical_types(const Object& value) const {
 }
 
 
-intptr_t Class::NumCanonicalTypes() const {
-  if (CanonicalType() != Type::null()) {
-    return 1;
+RawType* Class::CanonicalType() const {
+  if (NumTypeArguments() == 0) {
+    return reinterpret_cast<RawType*>(raw_ptr()->canonical_types_);
   }
-  const Object& types = Object::Handle(canonical_types());
-  if (types.IsNull()) {
-    return 0;
+  Array& types = Array::Handle();
+  types ^= canonical_types();
+  if (!types.IsNull() && (types.Length() > 0)) {
+    return reinterpret_cast<RawType*>(types.At(0));
   }
-  intptr_t num_types = Array::Cast(types).Length();
-  while ((num_types > 0) &&
-         (Array::Cast(types).At(num_types - 1) == Type::null())) {
-    num_types--;
+  return reinterpret_cast<RawType*>(Object::null());
+}
+
+
+void Class::SetCanonicalType(const Type& type) const {
+  ASSERT(type.IsCanonical());
+  if (NumTypeArguments() == 0) {
+    ASSERT((canonical_types() == Object::null()) ||
+           (canonical_types() == type.raw()));  // Set during own finalization.
+    set_canonical_types(type);
+  } else {
+    Array& types = Array::Handle();
+    types ^= canonical_types();
+    ASSERT(!types.IsNull() && (types.Length() > 1));
+    ASSERT((types.At(0) == Object::null()) || (types.At(0) == type.raw()));
+    types.SetAt(0, type);
   }
-  return num_types;
 }
 
 
@@ -3617,6 +3626,8 @@ intptr_t Class::FindCanonicalTypeIndex(const Type& needle) const {
     return -1;
   }
   if (needle.raw() == CanonicalType()) {
+    // For a generic type or signature type, there exists another index with the
+    // same type. It will never be returned by this function.
     return 0;
   }
   REUSABLE_OBJECT_HANDLESCOPE(isolate);
@@ -5196,6 +5207,7 @@ bool Function::HasBreakpoint() const {
 
 void Function::SetInstructions(const Code& value) const {
   StorePointer(&raw_ptr()->instructions_, value.instructions());
+  StoreNonPointer(&raw_ptr()->entry_point_, value.EntryPoint());
 }
 
 void Function::AttachCode(const Code& value) const {
@@ -5216,8 +5228,7 @@ bool Function::HasCode() const {
 void Function::ClearCode() const {
   ASSERT(ic_data_array() == Array::null());
   StorePointer(&raw_ptr()->unoptimized_code_, Code::null());
-  StorePointer(&raw_ptr()->instructions_,
-      Code::Handle(StubCode::LazyCompile_entry()->code()).instructions());
+  SetInstructions(Code::Handle(StubCode::LazyCompile_entry()->code()));
 }
 
 
@@ -6450,6 +6461,9 @@ RawFunction* Function::ImplicitClosureFunction() const {
   } else {
     closure_function.set_signature_class(signature_class);
   }
+  // Finalize types in signature class here, so that the
+  // signature type is not computed twice.
+  ClassFinalizer::FinalizeTypesInClass(signature_class);
   const Type& signature_type = Type::Handle(signature_class.SignatureType());
   if (!signature_type.IsFinalized()) {
     ClassFinalizer::FinalizeType(
@@ -7145,7 +7159,7 @@ void RedirectionData::PrintJSONImpl(JSONStream* stream, bool ref) const {
 
 
 RawString* Field::GetterName(const String& field_name) {
-  return String::Concat(Symbols::GetterPrefix(), field_name);
+  return Field::GetterSymbol(field_name);
 }
 
 
@@ -7165,12 +7179,14 @@ RawString* Field::SetterSymbol(const String& field_name) {
 
 
 RawString* Field::NameFromGetter(const String& getter_name) {
-  return String::SubString(getter_name, strlen(kGetterPrefix));
+  return Symbols::New(getter_name, kGetterPrefixLength,
+      getter_name.Length() - kGetterPrefixLength);
 }
 
 
 RawString* Field::NameFromSetter(const String& setter_name) {
-  return String::SubString(setter_name, strlen(kSetterPrefix));
+  return Symbols::New(setter_name, kSetterPrefixLength,
+      setter_name.Length() - kSetterPrefixLength);
 }
 
 
@@ -8533,7 +8549,7 @@ void Script::Tokenize(const String& private_key) const {
   }
   // Get the source, scan and allocate the token stream.
   VMTagScope tagScope(thread, VMTag::kCompileScannerTagId);
-  CSTAT_TIMER_SCOPE(isolate, scanner_timer);
+  CSTAT_TIMER_SCOPE(thread, scanner_timer);
   const String& src = String::Handle(zone, Source());
   Scanner scanner(src, private_key);
   set_tokens(TokenStream::Handle(zone,
@@ -10022,8 +10038,7 @@ RawClass* Library::LookupCoreClass(const String& class_name) {
   String& name = String::Handle(class_name.raw());
   if (class_name.CharAt(0) == kPrivateIdentifierStart) {
     // Private identifiers are mangled on a per library basis.
-    name = String::Concat(name, String::Handle(core_lib.private_key()));
-    name = Symbols::New(name);
+    name = Symbols::FromConcat(name, String::Handle(core_lib.private_key()));
   }
   return core_lib.LookupClass(name);
 }
@@ -10036,8 +10051,7 @@ RawString* Library::PrivateName(const String& name) const {
   // ASSERT(strchr(name, '@') == NULL);
   String& str = String::Handle();
   str = name.raw();
-  str = String::Concat(str, String::Handle(this->private_key()));
-  str = Symbols::New(str);
+  str = Symbols::FromConcat(str, String::Handle(this->private_key()));
   return str.raw();
 }
 
@@ -11023,8 +11037,9 @@ void PcDescriptors::CopyData(GrowableArray<uint8_t>* delta_encoded_data) {
 
 RawPcDescriptors* PcDescriptors::New(GrowableArray<uint8_t>* data) {
   ASSERT(Object::pc_descriptors_class() != Class::null());
-  Isolate* isolate = Isolate::Current();
-  PcDescriptors& result = PcDescriptors::Handle(isolate);
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
+  PcDescriptors& result = PcDescriptors::Handle(thread->zone());
   {
     uword size = PcDescriptors::InstanceSize(data->length());
     RawObject* raw = Object::Allocate(PcDescriptors::kClassId,
@@ -11043,8 +11058,9 @@ RawPcDescriptors* PcDescriptors::New(GrowableArray<uint8_t>* data) {
 
 RawPcDescriptors* PcDescriptors::New(intptr_t length) {
   ASSERT(Object::pc_descriptors_class() != Class::null());
-  Isolate* isolate = Isolate::Current();
-  PcDescriptors& result = PcDescriptors::Handle(isolate);
+  Thread* thread = Thread::Current();
+  Isolate* isolate = thread->isolate();
+  PcDescriptors& result = PcDescriptors::Handle(thread->zone());
   {
     uword size = PcDescriptors::InstanceSize(length);
     RawObject* raw = Object::Allocate(PcDescriptors::kClassId,
@@ -11087,7 +11103,7 @@ void PcDescriptors::PrintHeaderString() {
 
 const char* PcDescriptors::ToCString() const {
   if (Length() == 0) {
-    return "No pc descriptors\n";
+    return "empty PcDescriptors\n";
   }
   // 4 bits per hex digit.
   const int addr_width = kBitsPerWord / 4;
@@ -11415,6 +11431,9 @@ static int PrintVarInfo(char* buffer, int len,
 const char* LocalVarDescriptors::ToCString() const {
   if (IsNull()) {
     return "LocalVarDescriptors(NULL)";
+  }
+  if (Length() == 0) {
+    return "empty LocalVarDescriptors";
   }
   intptr_t len = 1;  // Trailing '\0'.
   String& var_name = String::Handle();
@@ -12351,6 +12370,22 @@ bool ICData::IsUsedAt(intptr_t i) const {
 }
 
 
+RawICData* ICData::New() {
+  ICData& result = ICData::Handle();
+  {
+    // IC data objects are long living objects, allocate them in old generation.
+    RawObject* raw = Object::Allocate(ICData::kClassId,
+                                      ICData::InstanceSize(),
+                                      Heap::kOld);
+    NoSafepointScope no_safepoint;
+    result ^= raw;
+  }
+  result.set_deopt_id(Isolate::kNoDeoptId);
+  result.set_state_bits(0);
+  return result.raw();
+}
+
+
 RawICData* ICData::New(const Function& owner,
                        const String& target_name,
                        const Array& arguments_descriptor,
@@ -13104,11 +13139,13 @@ intptr_t Code::GetDeoptIdForOsr(uword pc) const {
 
 
 const char* Code::ToCString() const {
-  const char* kFormat = "Code entry:%p";
-  intptr_t len = OS::SNPrint(NULL, 0, kFormat, EntryPoint()) + 1;
-  char* chars = Thread::Current()->zone()->Alloc<char>(len);
-  OS::SNPrint(chars, len, kFormat, EntryPoint());
-  return chars;
+  Zone* zone = Thread::Current()->zone();
+  if (IsStubCode()) {
+    const char* name = StubCode::NameOfStub(EntryPoint());
+    return zone->PrintToString("[stub: %s]", name);
+  } else {
+    return zone->PrintToString("Code entry:%" Px, EntryPoint());
+  }
 }
 
 
@@ -14357,7 +14394,10 @@ RawType* Instance::GetType() const {
     return Type::NullType();
   }
   const Class& cls = Class::Handle(clazz());
-  Type& type = Type::Handle(cls.CanonicalType());
+  Type& type = Type::Handle();
+  if (cls.NumTypeArguments() == 0) {
+    type = cls.CanonicalType();
+  }
   if (type.IsNull()) {
     TypeArguments& type_arguments = TypeArguments::Handle();
     if (cls.NumTypeArguments() > 0) {
@@ -14917,8 +14957,7 @@ RawString* AbstractType::BuildName(NameVisibility name_visibility) const {
     } else {
       bound_name = String::New(Symbols::OptimizedOut());
     }
-    type_name = String::Concat(type_name, bound_name);
-    return Symbols::New(type_name);
+    return Symbols::FromConcat(type_name, bound_name);
   }
   if (IsTypeParameter()) {
     return TypeParameter::Cast(*this).name();
@@ -15609,7 +15648,7 @@ RawAbstractType* Type::Canonicalize(GrowableObjectArray* trail) const {
     return Object::dynamic_type();
   }
   // Fast canonical lookup/registry for simple types.
-  if ((cls.NumTypeArguments() == 0) && !cls.IsSignatureClass()) {
+  if (cls.NumTypeArguments() == 0) {
     type = cls.CanonicalType();
     if (type.IsNull()) {
       ASSERT(!cls.raw()->IsVMHeapObject() || (isolate == Dart::vm_isolate()));
@@ -15632,7 +15671,7 @@ RawAbstractType* Type::Canonicalize(GrowableObjectArray* trail) const {
   // list of canonicalized types.
   // TODO(asiva): Try to re-factor this lookup code to make sharing
   // easy between the 4 versions of this loop.
-  intptr_t index = 0;
+  intptr_t index = 1;  // Slot 0 is reserved for CanonicalType().
   while (index < length) {
     type ^= canonical_types.At(index);
     if (type.IsNull()) {
@@ -15676,19 +15715,20 @@ RawAbstractType* Type::Canonicalize(GrowableObjectArray* trail) const {
   }
 
   // The type needs to be added to the list. Grow the list if it is full.
-  if (index == length) {
+  if (index >= length) {
+    ASSERT((index == length) || ((index == 1) && (length == 0)));
     const intptr_t new_length = (length > 64) ?
         (length + 64) :
-        ((length == 0) ? 1 : (length * 2));
+        ((length == 0) ? 2 : (length * 2));
     const Array& new_canonical_types = Array::Handle(
         isolate, Array::Grow(canonical_types, new_length, Heap::kOld));
     cls.set_canonical_types(new_canonical_types);
-    new_canonical_types.SetAt(index, *this);
-  } else {
-    canonical_types.SetAt(index, *this);
+    canonical_types = new_canonical_types.raw();
   }
+  canonical_types.SetAt(index, *this);
+  if ((index == 1) && cls.IsCanonicalSignatureClass()) {
+    canonical_types.SetAt(0, *this);  // Also set canonical signature type at 0.
 #ifdef DEBUG
-  if ((index == 0) && cls.IsCanonicalSignatureClass()) {
     // Verify that the first canonical type is the signature type by checking
     // that the type argument vector of the canonical type ends with the
     // uninstantiated type parameters of the signature class. Note that these
@@ -15714,8 +15754,8 @@ RawAbstractType* Type::Canonicalize(GrowableObjectArray* trail) const {
       type_param ^= type_params.TypeAt(i);
       ASSERT(type_arg.Equals(type_param));
     }
-  }
 #endif
+  }
   ASSERT(IsOld());
   ASSERT(type_args.IsNull() || type_args.IsOld());
   SetCanonical();

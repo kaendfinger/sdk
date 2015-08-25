@@ -45,6 +45,7 @@ ServiceEvent::ServiceEvent(const DebuggerEvent* debugger_event)
   if (type == DebuggerEvent::kBreakpointReached) {
     set_breakpoint(debugger_event->breakpoint());
     set_async_continuation(debugger_event->async_continuation());
+    set_at_async_jump(debugger_event->at_async_jump());
   }
   if (type == DebuggerEvent::kExceptionThrown) {
     set_exception(debugger_event->exception());
@@ -61,6 +62,8 @@ const char* ServiceEvent::KindAsCString() const {
   switch (kind()) {
     case kIsolateStart:
       return "IsolateStart";
+    case kIsolateRunnable:
+      return "IsolateRunnable";
     case kIsolateExit:
       return "IsolateExit";
     case kIsolateUpdate:
@@ -105,6 +108,7 @@ const char* ServiceEvent::KindAsCString() const {
 const char* ServiceEvent::stream_id() const {
   switch (kind()) {
     case kIsolateStart:
+    case kIsolateRunnable:
     case kIsolateExit:
     case kIsolateUpdate:
       return Service::isolate_stream.id();
@@ -168,6 +172,7 @@ void ServiceEvent::PrintJSON(JSONStream* js) const {
   }
   if (async_continuation() != NULL && !async_continuation()->IsNull()) {
     jsobj.AddProperty("_asyncContinuation", *(async_continuation()));
+    jsobj.AddProperty("_atAsyncJump", at_async_jump());
   }
   if (inspectee() != NULL) {
     jsobj.AddProperty("inspectee", *(inspectee()));

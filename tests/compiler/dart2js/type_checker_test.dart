@@ -16,7 +16,7 @@ import 'package:compiler/src/elements/modelx.dart' show
     ElementX,
     FunctionElementX;
 import 'package:compiler/src/io/source_file.dart';
-import 'package:compiler/src/resolution/resolution.dart' show
+import 'package:compiler/src/resolution/tree_elements.dart' show
     TreeElements,
     TreeElementMapping;
 import 'package:compiler/src/tree/tree.dart';
@@ -2181,7 +2181,7 @@ analyzeTopLevel(String text, [expectedWarnings]) {
   if (expectedWarnings == null) expectedWarnings = [];
   if (expectedWarnings is !List) expectedWarnings = [expectedWarnings];
 
-  MockCompiler compiler = new MockCompiler.internal();
+  MockCompiler compiler = new MockCompiler.internal(enableAsyncAwait: true);
   compiler.diagnosticHandler = createHandler(compiler, text);
 
   return compiler.init("import 'dart:async';").then((_) {

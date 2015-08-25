@@ -235,8 +235,8 @@ class JavaScriptBackend extends Backend {
       new Uri(scheme: 'dart', path: '_js_embedded_names');
   static final Uri DART_ISOLATE_HELPER =
       new Uri(scheme: 'dart', path: '_isolate_helper');
-  static final Uri DART_HTML =
-      new Uri(scheme: 'dart', path: 'html');
+  static final Uri DART_ASYNC = new Uri(scheme: 'dart', path: 'async');
+  static final Uri DART_HTML = new Uri(scheme: 'dart', path: 'html');
 
   static const String INVOKE_ON = '_getCachedInvocation';
   static const String START_ROOT_ISOLATE = 'startRootIsolate';
@@ -273,6 +273,7 @@ class JavaScriptBackend extends Backend {
   FunctionInlineCache inlineCache = new FunctionInlineCache();
 
   LibraryElement jsHelperLibrary;
+  LibraryElement asyncLibrary;
   LibraryElement interceptorsLibrary;
   LibraryElement foreignLibrary;
   LibraryElement isolateHelperLibrary;
@@ -672,10 +673,11 @@ class JavaScriptBackend extends Backend {
   // TODO(karlklose): Split into findHelperFunction and findHelperClass and
   // add a check that the element has the expected kind.
   Element findHelper(String name) => find(jsHelperLibrary, name);
+  Element findAsyncHelper(String name) => find(asyncLibrary, name);
   Element findInterceptor(String name) => find(interceptorsLibrary, name);
 
   Element find(LibraryElement library, String name) {
-    Element element = library.findLocal(name);
+    Element element = library.implementation.findLocal(name);
     assert(invariant(library, element != null,
         message: "Element '$name' not found in '${library.canonicalUri}'."));
     return element;
@@ -891,7 +893,7 @@ class JavaScriptBackend extends Backend {
     if (enqueuer.isResolutionQueue) {
       cls.ensureResolved(compiler);
       cls.forEachMember((ClassElement classElement, Element member) {
-        if (member.name == Compiler.CALL_OPERATOR_NAME) {
+        if (member.name == Identifiers.call) {
           compiler.reportError(
               member,
               MessageKind.CALL_NOT_SUPPORTED_ON_NATIVE_CLASS);
@@ -1300,7 +1302,7 @@ class JavaScriptBackend extends Backend {
   void enableNoSuchMethod(Enqueuer world) {
     enqueue(world, getCreateInvocationMirror(), compiler.globalDependencies);
     world.registerInvocation(
-        new UniverseSelector(compiler.noSuchMethodSelector, null));
+        new UniverseSelector(Selectors.noSuchMethod_, null));
   }
 
   void enableIsolateSupport(Enqueuer enqueuer) {
@@ -1323,6 +1325,7 @@ class JavaScriptBackend extends Backend {
         Element element = find(isolateHelperLibrary, name);
         enqueuer.addToWorkList(element);
         compiler.globalDependencies.registerDependency(element);
+        helpersUsed.add(element.declaration);
       }
     } else {
       enqueuer.addToWorkList(find(isolateHelperLibrary, START_ROOT_ISOLATE));
@@ -1854,43 +1857,47 @@ class JavaScriptBackend extends Backend {
   }
 
   Element getAsyncHelper() {
-    return findHelper("asyncHelper");
+    return findAsyncHelper("_asyncHelper");
+  }
+
+  Element getWrapBody() {
+    return findAsyncHelper("_wrapJsFunctionForAsync");
   }
 
   Element getYieldStar() {
-    ClassElement classElement = findHelper("IterationMarker");
+    ClassElement classElement = findAsyncHelper("_IterationMarker");
     classElement.ensureResolved(compiler);
     return classElement.lookupLocalMember("yieldStar");
   }
 
   Element getYieldSingle() {
-    ClassElement classElement = findHelper("IterationMarker");
+    ClassElement classElement = findAsyncHelper("_IterationMarker");
     classElement.ensureResolved(compiler);
     return classElement.lookupLocalMember("yieldSingle");
   }
 
   Element getSyncStarUncaughtError() {
-    ClassElement classElement = findHelper("IterationMarker");
+    ClassElement classElement = findAsyncHelper("_IterationMarker");
     classElement.ensureResolved(compiler);
     return classElement.lookupLocalMember("uncaughtError");
   }
 
   Element getAsyncStarHelper() {
-    return findHelper("asyncStarHelper");
+    return findAsyncHelper("_asyncStarHelper");
   }
 
   Element getStreamOfController() {
-    return findHelper("streamOfController");
+    return findAsyncHelper("_streamOfController");
   }
 
   Element getEndOfIteration() {
-    ClassElement classElement = findHelper("IterationMarker");
+    ClassElement classElement = findAsyncHelper("_IterationMarker");
     classElement.ensureResolved(compiler);
     return classElement.lookupLocalMember("endOfIteration");
   }
 
   Element getSyncStarIterable() {
-    ClassElement classElement = findHelper("SyncStarIterable");
+    ClassElement classElement = findAsyncHelper("_SyncStarIterable");
     classElement.ensureResolved(compiler);
     return classElement;
   }
@@ -1908,7 +1915,8 @@ class JavaScriptBackend extends Backend {
   }
 
   Element getASyncStarController() {
-    ClassElement classElement = findHelper("AsyncStarStreamController");
+    ClassElement classElement =
+        findAsyncHelper("_AsyncStarStreamController");
     classElement.ensureResolved(compiler);
     return classElement;
   }
@@ -2022,6 +2030,8 @@ class JavaScriptBackend extends Backend {
     Uri uri = library.canonicalUri;
     if (uri == DART_JS_HELPER) {
       jsHelperLibrary = library;
+    } else if (uri == DART_ASYNC) {
+      asyncLibrary = library;
     } else if (uri == DART_INTERNAL) {
       internalLibrary = library;
     } else if (uri ==  DART_INTERCEPTORS) {
@@ -2695,6 +2705,7 @@ class JavaScriptBackend extends Backend {
       enqueue(enqueuer, getAsyncHelper(), registry);
       enqueue(enqueuer, getSyncCompleterConstructor(), registry);
       enqueue(enqueuer, getStreamIteratorConstructor(), registry);
+      enqueue(enqueuer, getWrapBody(), registry);
     } else if (element.asyncMarker == AsyncMarker.SYNC_STAR) {
       ClassElement clsSyncStarIterable = getSyncStarIterable();
       clsSyncStarIterable.ensureResolved(compiler);
@@ -2714,6 +2725,7 @@ class JavaScriptBackend extends Backend {
       enqueue(enqueuer, getYieldStar(), registry);
       enqueue(enqueuer, getASyncStarControllerConstructor(), registry);
       enqueue(enqueuer, getStreamIteratorConstructor(), registry);
+      enqueue(enqueuer, getWrapBody(), registry);
     }
   }
 
@@ -2747,6 +2759,8 @@ class JavaScriptBackend extends Backend {
             compiler.currentElement,
             asyncHelper:
                 emitter.staticFunctionAccess(getAsyncHelper()),
+            wrapBody:
+                emitter.staticFunctionAccess(getWrapBody()),
             newCompleter: emitter.staticFunctionAccess(
                 getSyncCompleterConstructor()),
             safeVariableName: namer.safeVariablePrefixForAsyncRewrite,
@@ -2775,6 +2789,8 @@ class JavaScriptBackend extends Backend {
                 getAsyncStarHelper()),
             streamOfController: emitter.staticFunctionAccess(
                 getStreamOfController()),
+            wrapBody:
+                emitter.staticFunctionAccess(getWrapBody()),
             newController: emitter.staticFunctionAccess(
                 getASyncStarControllerConstructor()),
             safeVariableName: namer.safeVariablePrefixForAsyncRewrite,
@@ -3033,12 +3049,20 @@ class JavaScriptResolutionCallbacks extends ResolutionCallbacks {
     registerBackendInstantiation(backend.compiler.stringClass, registry);
   }
 
+  void onCompileTimeError(Registry registry, ErroneousElement error) {
+    if (backend.compiler.generateCodeWithCompileTimeErrors) {
+      // TODO(johnniwinther): This should have its own uncatchable error.
+      onThrowRuntimeError(registry);
+    }
+  }
+
   void onSuperNoSuchMethod(Registry registry) {
     assert(registry.isForResolution);
     registerBackendStaticInvocation(
         backend.getCreateInvocationMirror(), registry);
     registerBackendStaticInvocation(
-        backend.compiler.objectClass.lookupLocalMember(Compiler.NO_SUCH_METHOD),
+        backend.compiler.objectClass.lookupLocalMember(
+            Identifiers.noSuchMethod_),
         registry);
     registerBackendInstantiation(backend.compiler.listClass, registry);
     registerBackendInstantiation(backend.compiler.stringClass, registry);

@@ -23,9 +23,19 @@ import '../diagnostics/spannable.dart' show
 import '../helpers/helpers.dart';
 import '../ordered_typeset.dart' show
     OrderedTypeSet;
-import '../resolution/resolution.dart';
 import '../resolution/class_members.dart' show
     ClassMemberMixin;
+import '../resolution/scope.dart' show
+    ClassScope,
+    LibraryScope,
+    Scope,
+    TypeDeclarationScope;
+import '../resolution/resolution.dart' show
+    AnalyzableElementX;
+import '../resolution/tree_elements.dart' show
+    TreeElements;
+import '../resolution/typedefs.dart' show
+    TypedefCyclicVisitor;
 import '../scanner/scannerlib.dart' show
     EOF_TOKEN,
     ErrorToken,
@@ -1003,10 +1013,12 @@ class LibraryElementX
   /** Look up a top-level element in this library, but only look for
     * non-imported elements. Returns null if no such element exist. */
   Element findLocal(String elementName) {
-    // TODO(johnniwinther): How to handle injected elements in the patch
+    // TODO((johnniwinther): How to handle injected elements in the patch
     // library?
     Element result = localScope.lookup(elementName);
-    if (result == null || result.library != this) return null;
+    if (result == null && isPatch) {
+      return origin.findLocal(elementName);
+    }
     return result;
   }
 

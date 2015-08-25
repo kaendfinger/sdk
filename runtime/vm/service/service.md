@@ -620,7 +620,7 @@ The _streamId_ parameter may have the following published values:
 
 streamId | event types provided
 -------- | -----------
-Isolate | IsolateStart, IsolateExit, IsolateUpdate
+Isolate | IsolateStart, IsolateRunnable, IsolateExit, IsolateUpdate
 Debug | PauseStart, PauseExit, PauseBreakpoint, PauseInterrupted, PauseException, Resume, BreakpointAdded, BreakpointResolved, BreakpointRemoved, Inspect
 GC | GC
 
@@ -756,7 +756,7 @@ will be the _OptimizedOut_ [Sentinel](#sentinel).
 ### Breakpoint
 
 ```
-class Breakpoint extends Response {
+class Breakpoint extends Object {
   int breakpointNumber;
   bool resolved;
   SourceLocation location;
@@ -782,22 +782,13 @@ class Class extends Object {
   string name;
 
   // The error which occurred during class finalization, if it exists.
-  @Instance error [optional];
+  @Error error [optional];
 
   // Is this an abstract class?
   bool abstract;
 
   // Is this a const class?
   bool const;
-
-  // Has this class been finalized?
-  bool finalized;
-
-  // Is this class implemented?
-  bool implemented;
-
-  // Is this a vm patch class?
-  bool patch;
 
   // The library which contains this class.
   @Library library;
@@ -1026,6 +1017,9 @@ enum EventKind {
   // Notification that a new isolate has started.
   IsolateStart,
 
+  // Notification that an isolate is ready to run.
+  IsolateRunnable,
+
   // Notification that an isolate has exited.
   IsolateExit,
 
@@ -1164,11 +1158,8 @@ A _Flag_ represents a single VM command line flag.
 
 ```
 class FlagList extends Response {
-  // A list of all flags which are set to default values.
-  Flag[] unmodifiedFlags;
-
-  // A list of all flags which have been modified by the user.
-  Flag[] modifiedFlags;
+  // A list of all flags in the VM.
+  Flag[] flags;
 }
 ```
 
@@ -1181,8 +1172,7 @@ class Frame extends Response {
   int index;
   @Function function;
   @Code code;
-  @Script script;
-  int tokenPos;
+  SourceLocation location;
   BoundVariable[] vars;
 }
 ```
@@ -1594,9 +1584,6 @@ class Isolate extends Response {
   // Suitable to pass to DateTime.fromMillisecondsSinceEpoch.
   int startTime;
 
-  // The entry function for this isolate.
-  @Function entry [optional];
-
   // The number of live ports for this isolate.
   int livePorts;
 
@@ -1607,17 +1594,26 @@ class Isolate extends Response {
   // running, this will be a resume event.
   Event pauseEvent;
 
-  // The error that is causing this isolate to exit, if applicable.
-  Error error [optional];
+  // The entry function for this isolate.
+  //
+  // Guaranteed to be initialized when the IsolateRunnable event fires.
+  @Function entry [optional];
 
   // The root library for this isolate.
-  @Library rootLib;
+  //
+  // Guaranteed to be initialized when the IsolateRunnable event fires.
+  @Library rootLib [optional];
 
   // A list of all libraries for this isolate.
+  //
+  // Guaranteed to be initialized when the IsolateRunnable event fires.
   @Library[] libraries;
 
   // A list of all breakpoints for this isolate.
   Breakpoint[] breakpoints;
+
+  // The error that is causing this isolate to exit, if applicable.
+  Error error [optional];
 }
 ```
 

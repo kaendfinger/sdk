@@ -48,11 +48,9 @@ ServiceIdZone::~ServiceIdZone() {
 }
 
 
-RingServiceIdZone::RingServiceIdZone(
-    ObjectIdRing* ring, ObjectIdRing::IdPolicy policy)
-        : ring_(ring),
-          policy_(policy) {
-  ASSERT(ring_ != NULL);
+RingServiceIdZone::RingServiceIdZone()
+    : ring_(NULL),
+      policy_(ObjectIdRing::kAllocateId) {
 }
 
 
@@ -60,7 +58,15 @@ RingServiceIdZone::~RingServiceIdZone() {
 }
 
 
+void RingServiceIdZone::Init(
+    ObjectIdRing* ring, ObjectIdRing::IdPolicy policy) {
+  ring_ = ring;
+  policy_ = policy;
+}
+
+
 char* RingServiceIdZone::GetServiceId(const Object& obj) {
+  ASSERT(ring_ != NULL);
   Thread* thread = Thread::Current();
   Zone* zone = thread->zone();
   ASSERT(zone != NULL);
@@ -1003,7 +1009,8 @@ static bool DumpIdZone(Isolate* isolate, JSONStream* js) {
   ObjectIdRing* ring = isolate->object_id_ring();
   ASSERT(ring != NULL);
   // When printing the ObjectIdRing, force object id reuse policy.
-  RingServiceIdZone reuse_zone(ring, ObjectIdRing::kReuseId);
+  RingServiceIdZone reuse_zone;
+  reuse_zone.Init(ring, ObjectIdRing::kReuseId);
   js->set_id_zone(&reuse_zone);
   ring->PrintJSON(js);
   return true;
@@ -1478,19 +1485,21 @@ static bool PrintInboundReferences(Isolate* isolate,
       slot_offset ^= path.At((i * 2) + 1);
 
       jselement.AddProperty("source", source);
-      jselement.AddProperty("slot", "<unknown>");
       if (source.IsArray()) {
         intptr_t element_index = slot_offset.Value() -
             (Array::element_offset(0) >> kWordSizeLog2);
-        jselement.AddProperty("slot", element_index);
+        jselement.AddProperty("parentListIndex", element_index);
       } else if (source.IsInstance()) {
         source_class ^= source.clazz();
         parent_field_map = source_class.OffsetToFieldMap();
         intptr_t offset = slot_offset.Value();
         if (offset > 0 && offset < parent_field_map.Length()) {
           field ^= parent_field_map.At(offset);
-          jselement.AddProperty("slot", field);
+          jselement.AddProperty("parentField", field);
         }
+      } else {
+        intptr_t element_index = slot_offset.Value();
+        jselement.AddProperty("_parentWordOffset", element_index);
       }
 
       // We nil out the array after generating the response to prevent
@@ -1863,7 +1872,7 @@ static bool GetInstances(Isolate* isolate, JSONStream* js) {
     JSONArray samples(&jsobj, "samples");
     for (int i = 0; i < storage.Length(); i++) {
       const Object& sample = Object::Handle(storage.At(i));
-      samples.AddValue(Instance::Cast(sample));
+      samples.AddValue(sample);
     }
   }
   return true;

@@ -135,7 +135,7 @@ static void CheckEncodeDecodeMessage(Dart_CObject* root) {
   ApiMessageWriter writer(&buffer, &malloc_allocator);
   writer.WriteCMessage(root);
 
-  ApiMessageReader api_reader(buffer, writer.BytesWritten(), &zone_allocator);
+  ApiMessageReader api_reader(buffer, writer.BytesWritten());
   Dart_CObject* new_root = api_reader.ReadMessage();
 
   // Check that the two messages are the same.
@@ -171,7 +171,7 @@ TEST_CASE(SerializeNull) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kNull, root->type);
@@ -199,7 +199,7 @@ TEST_CASE(SerializeSmi1) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kInt32, root->type);
@@ -228,7 +228,7 @@ TEST_CASE(SerializeSmi2) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kInt32, root->type);
@@ -257,7 +257,7 @@ Dart_CObject* SerializeAndDeserializeMint(const Mint& mint) {
   }
 
   // Read object back from the snapshot into a C structure.
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   CheckEncodeDecodeMessage(root);
@@ -331,7 +331,7 @@ TEST_CASE(SerializeDouble) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kDouble, root->type);
@@ -362,7 +362,7 @@ TEST_CASE(SerializeTrue) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kBool, root->type);
@@ -391,7 +391,7 @@ TEST_CASE(SerializeFalse) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kBool, root->type);
@@ -427,7 +427,7 @@ TEST_CASE(SerializeCapability) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kCapability, root->type);
@@ -462,7 +462,7 @@ TEST_CASE(SerializeBigint) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kBigint, root->type);
@@ -498,7 +498,7 @@ Dart_CObject* SerializeAndDeserializeBigint(const Bigint& bigint) {
   }
 
   // Read object back from the snapshot into a C structure.
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   // Bigint not supported.
   EXPECT_NOTNULL(root);
@@ -593,7 +593,7 @@ static void TestString(const char* cstr) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kString, root->type);
   EXPECT_STREQ(cstr, root->value.as_string);
@@ -643,7 +643,7 @@ TEST_CASE(SerializeArray) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kArray, root->type);
   EXPECT_EQ(kArrayLength, root->value.as_array.length);
@@ -730,7 +730,7 @@ TEST_CASE(SerializeEmptyArray) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kArray, root->type);
   EXPECT_EQ(kArrayLength, root->value.as_array.length);
@@ -765,7 +765,7 @@ TEST_CASE(SerializeByteArray) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kTypedData, root->type);
   EXPECT_EQ(kTypedDataLength, root->value.as_typed_data.length);
@@ -878,7 +878,7 @@ TEST_CASE(SerializeEmptyByteArray) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kTypedData, root->type);
   EXPECT_EQ(Dart_TypedData_kUint8, root->value.as_typed_data.type);
@@ -897,7 +897,8 @@ class TestSnapshotWriter : public SnapshotWriter {
                        alloc,
                        kInitialSize,
                        &forward_list_,
-                       true),
+                       true, /* can_send_any_object */
+                       false /* snapshot_code */),
         forward_list_(kMaxPredefinedObjectIds) {
     ASSERT(buffer != NULL);
     ASSERT(alloc != NULL);
@@ -1244,7 +1245,8 @@ UNIT_TEST_CASE(FullSnapshot) {
     {
       FullSnapshotWriter writer(NULL,
                                 &isolate_snapshot_buffer,
-                                &malloc_allocator);
+                                &malloc_allocator,
+                                false /* snapshot_code */);
       writer.WriteFullSnapshot();
     }
   }
@@ -1302,7 +1304,8 @@ UNIT_TEST_CASE(FullSnapshot1) {
     {
       FullSnapshotWriter writer(NULL,
                                 &isolate_snapshot_buffer,
-                                &malloc_allocator);
+                                &malloc_allocator,
+                                false /* snapshot_code */);
       writer.WriteFullSnapshot();
     }
 
@@ -1727,9 +1730,7 @@ TEST_CASE(IntArrayMessage) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer,
-                              writer.BytesWritten(),
-                              &zone_allocator);
+  ApiMessageReader api_reader(buffer, writer.BytesWritten());
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_EQ(Dart_CObject_kArray, root->type);
   EXPECT_EQ(kArrayLength, root->value.as_array.length);
@@ -1763,7 +1764,7 @@ static uint8_t* GetSerialized(Dart_Handle lib,
 // Helper function to deserialize the result into a Dart_CObject structure.
 static Dart_CObject* GetDeserialized(uint8_t* buffer, intptr_t buffer_len) {
   // Read object back from the snapshot into a C structure.
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   return api_reader.ReadMessage();
 }
 
@@ -1779,7 +1780,7 @@ static void CheckString(Dart_Handle dart_string, const char* expected) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kString, root->type);
@@ -1799,7 +1800,7 @@ static void CheckStringInvalid(Dart_Handle dart_string) {
 
   // Read object back from the snapshot into a C structure.
   ApiNativeScope scope;
-  ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+  ApiMessageReader api_reader(buffer, buffer_len);
   Dart_CObject* root = api_reader.ReadMessage();
   EXPECT_NOTNULL(root);
   EXPECT_EQ(Dart_CObject_kUnsupported, root->type);
@@ -1909,7 +1910,7 @@ UNIT_TEST_CASE(DartGeneratedMessages) {
 
       // Read object back from the snapshot into a C structure.
       ApiNativeScope scope;
-      ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+      ApiMessageReader api_reader(buffer, buffer_len);
       Dart_CObject* root = api_reader.ReadMessage();
       EXPECT_NOTNULL(root);
       EXPECT_EQ(Dart_CObject_kInt32, root->type);
@@ -1927,7 +1928,7 @@ UNIT_TEST_CASE(DartGeneratedMessages) {
 
       // Read object back from the snapshot into a C structure.
       ApiNativeScope scope;
-      ApiMessageReader api_reader(buffer, buffer_len, &zone_allocator);
+      ApiMessageReader api_reader(buffer, buffer_len);
       Dart_CObject* root = api_reader.ReadMessage();
       EXPECT_NOTNULL(root);
       EXPECT_EQ(Dart_CObject_kBigint, root->type);

@@ -21,6 +21,7 @@ vars.update({
   "collection_rev": "@1da9a07f32efa2ba0c391b289e2037391e31da0e",
   "crypto_rev" : "@2df57a1e26dd88e8d0614207d4b062c73209917d",
   "csslib_tag" : "@0.12.0",
+  "dart2js_info_rev" : "@bad01369f1f605ab688d505c135db54de927318f",
   "glob_rev": "@704cf75e4f26b417505c5c611bdaacd8808467dd",
   "html_tag" : "@0.12.1+1",
   "http_rev" : "@9b93e1542c753090c50b46ef1592d44bc858bfe7",
@@ -34,7 +35,7 @@ vars.update({
   "metatest_rev": "@e5aa8e4e19fc4188ac2f6d38368a47d8f07c3df1",
   "oauth2_rev": "@1bff41f4d54505c36f2d1a001b83b8b745c452f5",
   "observatory_pub_packages_rev": "@cdc4b3d4c15b9c0c8e7702dff127b440afbb7485",
-  "package_config_tag": "@0.1.1",
+  "package_config_rev": "@0.1.3",
   "path_rev": "@b657c0854d1cf41c014986fa9d2321f1173df805",
   "plugin_tag": "@0.1.0",
   "pool_rev": "@22e12aeb16ad0b626900dbe79e4a25391ddfb28c",
@@ -93,6 +94,8 @@ deps.update({
       "https://github.com/dart-lang/crypto.git" + Var("crypto_rev"),
   "src/dart/third_party/pkg/csslib":
       "https://github.com/dart-lang/csslib.git" + Var("csslib_tag"),
+  "src/dart/third_party/pkg/dart2js_info":
+      "https://github.com/dart-lang/dart2js_info.git" + Var("dart2js_info_rev"),
   "src/dart/third_party/pkg/collection":
       "https://github.com/dart-lang/collection.git" + Var("collection_rev"),
   "src/dart/third_party/pkg/glob":
@@ -153,7 +156,7 @@ deps.update({
       "https://github.com/dart-lang/path.git" + Var("path_rev"),
   "src/dart/third_party/pkg/package_config":
       "https://github.com/dart-lang/package_config.git" +
-      Var("package_config_tag"),
+      Var("package_config_rev"),
   "src/dart/third_party/pkg/source_span":
       "https://github.com/dart-lang/source_span.git" + Var("source_span_rev"),
   "src/dart/third_party/pkg/stack_trace":

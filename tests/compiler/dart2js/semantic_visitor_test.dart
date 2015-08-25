@@ -14,9 +14,9 @@ import 'package:compiler/src/diagnostics/spannable.dart';
 import 'package:compiler/src/diagnostics/messages.dart' show MessageKind;
 import 'package:compiler/src/compiler.dart';
 import 'package:compiler/src/elements/elements.dart';
-import 'package:compiler/src/resolution/resolution.dart';
-import 'package:compiler/src/resolution/semantic_visitor.dart';
 import 'package:compiler/src/resolution/operators.dart';
+import 'package:compiler/src/resolution/semantic_visitor.dart';
+import 'package:compiler/src/resolution/tree_elements.dart';
 import 'package:compiler/src/tree/tree.dart';
 import 'package:compiler/src/universe/universe.dart' show
     CallStructure,
@@ -195,33 +195,12 @@ const List<VisitKind> UNTESTABLE_KINDS = const <VisitKind>[
   VisitKind.VISIT_SUPER_METHOD_SETTER_COMPOUND,
   VisitKind.VISIT_SUPER_METHOD_SETTER_PREFIX,
   VisitKind.VISIT_SUPER_METHOD_SETTER_POSTFIX,
-  // The constant expressions of assignment to constant type literals cannot be
-  // handled the compile constant evaluator.
-  VisitKind.VISIT_CLASS_TYPE_LITERAL_SET,
-  VisitKind.VISIT_TYPEDEF_TYPE_LITERAL_SET,
-  // Invalid assignments is currently report through an erroneous element.
-  VisitKind.VISIT_TYPE_VARIABLE_TYPE_LITERAL_SET,
-  VisitKind.VISIT_FINAL_PARAMETER_SET,
-  VisitKind.VISIT_FINAL_LOCAL_VARIABLE_SET,
-  VisitKind.VISIT_LOCAL_FUNCTION_SET,
-  VisitKind.VISIT_STATIC_GETTER_SET,
-  VisitKind.VISIT_FINAL_STATIC_FIELD_SET,
-  VisitKind.VISIT_STATIC_FUNCTION_SET,
-  VisitKind.VISIT_FINAL_TOP_LEVEL_FIELD_SET,
-  VisitKind.VISIT_TOP_LEVEL_GETTER_SET,
-  VisitKind.VISIT_TOP_LEVEL_FUNCTION_SET,
   // The only undefined unary, `+`, is currently handled and skipped in the
   // parser.
   VisitKind.ERROR_UNDEFINED_UNARY_EXPRESSION,
   // Constant expression are currently not computed during resolution.
   VisitKind.VISIT_CONSTANT_GET,
   VisitKind.VISIT_CONSTANT_INVOKE,
-  // TODO(johnniwinther): Test these when ResolverVisitor.visitSendSet has been
-  // rewritten.
-  VisitKind.ERROR_INVALID_SET,
-  VisitKind.ERROR_INVALID_PREFIX,
-  VisitKind.ERROR_INVALID_POSTFIX,
-  VisitKind.ERROR_INVALID_COMPOUND,
 ];
 
 main(List<String> arguments) {

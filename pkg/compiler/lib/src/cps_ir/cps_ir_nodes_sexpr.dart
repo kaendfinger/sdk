@@ -337,7 +337,8 @@ class SExpressionStringifier extends Indentation implements Visitor<String> {
     String arguments = node.arguments.map(access).join(' ');
     String continuation = node.continuation == null ? ''
         : ' ${access(node.continuation)}';
-    return '(JS ${node.type} ${node.codeTemplate} ($arguments)$continuation)';
+    return '$indentation(JS "${node.codeTemplate.source}"'
+        ' ($arguments)$continuation)';
   }
 
   String visitGetLength(GetLength node) {
@@ -426,11 +427,11 @@ class ConstantStringifier extends ConstantValueVisitor<String, Null> {
   }
 
   String visitInterceptor(InterceptorConstantValue constant, _) {
-    return _failWith(constant);
+    return '(Interceptor "${constant.unparse()}")';
   }
 
   String visitSynthetic(SyntheticConstantValue constant, _) {
-    return _failWith(constant);
+    return '(Synthetic "${constant.unparse()}")';
   }
 
   String visitDeferred(DeferredConstantValue constant, _) {

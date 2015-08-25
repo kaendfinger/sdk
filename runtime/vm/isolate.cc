@@ -44,6 +44,8 @@
 
 namespace dart {
 
+DECLARE_FLAG(charp, timeline_trace_dir);
+
 DEFINE_FLAG(bool, trace_isolates, false,
             "Trace isolate creation and shut down.");
 DEFINE_FLAG(bool, pause_isolates_on_start, false,
@@ -57,9 +59,6 @@ DEFINE_FLAG(charp, isolate_log_filter, NULL,
             "Log isolates whose name include the filter. "
             "Default: service isolate log messages are suppressed.");
 
-DEFINE_FLAG(charp, timeline_trace_dir, NULL,
-            "Enable all timeline trace streams and output traces "
-            "into specified directory.");
 DEFINE_FLAG(int, new_gen_semi_max_size, (kWordSize <= 4) ? 16 : 32,
             "Max size of new gen semi space in MB");
 DEFINE_FLAG(int, old_gen_heap_size, 0,
@@ -381,19 +380,24 @@ void IsolateMessageHandler::MessageNotify(Message::Priority priority) {
 
 
 bool IsolateMessageHandler::HandleMessage(Message* message) {
-  StackZone zone(I);
-  HandleScope handle_scope(I);
-  TimelineDurationScope tds(I, I->GetIsolateStream(), "HandleMessage");
+  ASSERT(IsCurrentIsolate());
+  Thread* thread = Thread::Current();
+  StackZone stack_zone(thread);
+  Zone* zone = stack_zone.GetZone();
+  HandleScope handle_scope(thread);
+  TimelineDurationScope tds(thread, I->GetIsolateStream(), "HandleMessage");
+  tds.SetNumArguments(1);
+  tds.CopyArgument(0, "isolateName", I->name());
 
   // TODO(turnidge): Rework collection total dart execution.  This can
   // overcount when other things (gc, compilation) are active.
-  TIMERSCOPE(isolate_, time_dart_execution);
+  TIMERSCOPE(thread, time_dart_execution);
 
   // If the message is in band we lookup the handler to dispatch to.  If the
   // receive port was closed, we drop the message without deserializing it.
   // Illegal port is a special case for artificially enqueued isolate library
   // messages which are handled in C++ code below.
-  Object& msg_handler = Object::Handle(I);
+  Object& msg_handler = Object::Handle(zone);
   if (!message->IsOOB() && (message->dest_port() != Message::kIllegalPort)) {
     msg_handler = DartLibraryCalls::LookupHandler(message->dest_port());
     if (msg_handler.IsError()) {
@@ -415,8 +419,8 @@ bool IsolateMessageHandler::HandleMessage(Message* message) {
   // Parse the message.
   MessageSnapshotReader reader(message->data(),
                                message->len(),
-                               I, zone.GetZone());
-  const Object& msg_obj = Object::Handle(I, reader.ReadObject());
+                               I, zone);
+  const Object& msg_obj = Object::Handle(zone, reader.ReadObject());
   if (msg_obj.IsError()) {
     // An error occurred while reading the message.
     delete message;
@@ -431,7 +435,7 @@ bool IsolateMessageHandler::HandleMessage(Message* message) {
     UNREACHABLE();
   }
 
-  Instance& msg = Instance::Handle(I);
+  Instance& msg = Instance::Handle(zone);
   msg ^= msg_obj.raw();  // Can't use Instance::Cast because may be null.
 
   bool success = true;
@@ -442,7 +446,7 @@ bool IsolateMessageHandler::HandleMessage(Message* message) {
     if (msg.IsArray()) {
       const Array& oob_msg = Array::Cast(msg);
       if (oob_msg.Length() > 0) {
-        const Object& oob_tag = Object::Handle(I, oob_msg.At(0));
+        const Object& oob_tag = Object::Handle(zone, oob_msg.At(0));
         if (oob_tag.IsSmi()) {
           switch (Smi::Cast(oob_tag).Value()) {
             case Message::kServiceOOBMsg: {
@@ -471,7 +475,7 @@ bool IsolateMessageHandler::HandleMessage(Message* message) {
     if (msg.IsArray()) {
       const Array& msg_arr = Array::Cast(msg);
       if (msg_arr.Length() > 0) {
-        const Object& oob_tag = Object::Handle(I, msg_arr.At(0));
+        const Object& oob_tag = Object::Handle(zone, msg_arr.At(0));
         if (oob_tag.IsSmi() &&
             (Smi::Cast(oob_tag).Value() == Message::kDelayedIsolateLibOOBMsg)) {
           success = HandleLibMessage(Array::Cast(msg_arr));
@@ -479,7 +483,7 @@ bool IsolateMessageHandler::HandleMessage(Message* message) {
       }
     }
   } else {
-    const Object& result = Object::Handle(I,
+    const Object& result = Object::Handle(zone,
         DartLibraryCalls::HandleMessage(msg_handler, msg));
     if (result.IsError()) {
       success = ProcessUnhandledException(Error::Cast(result));
@@ -661,7 +665,6 @@ Isolate::Isolate(const Dart_IsolateFlags& api_flags)
       flags_(),
       random_(),
       simulator_(NULL),
-      long_jump_base_(NULL),
       timer_list_(),
       deopt_id_(0),
       mutex_(new Mutex()),
@@ -687,7 +690,6 @@ Isolate::Isolate(const Dart_IsolateFlags& api_flags)
       last_allocationprofile_gc_timestamp_(0),
       object_id_ring_(NULL),
       trace_buffer_(NULL),
-      timeline_event_recorder_(NULL),
       profiler_data_(NULL),
       tag_table_(GrowableObjectArray::null()),
       current_tag_(UserTag::null()),
@@ -737,7 +739,6 @@ Isolate::~Isolate() {
     delete compiler_stats_;
     compiler_stats_ = NULL;
   }
-  RemoveTimelineEventRecorder();
   delete thread_registry_;
 }
 
@@ -768,11 +769,11 @@ Isolate* Isolate::Init(const char* name_prefix,
   ISOLATE_METRIC_LIST(ISOLATE_METRIC_INIT);
 #undef ISOLATE_METRIC_INIT
 
-  const bool force_streams = FLAG_timeline_trace_dir != NULL;
-
   // Initialize Timeline streams.
 #define ISOLATE_TIMELINE_STREAM_INIT(name, enabled_by_default)                 \
-  result->stream_##name##_.Init(#name, force_streams || enabled_by_default);
+  result->stream_##name##_.Init(#name,                                         \
+                                Timeline::EnableStreamByDefault(#name) ||      \
+                                enabled_by_default);
   ISOLATE_TIMELINE_STREAM_LIST(ISOLATE_TIMELINE_STREAM_INIT);
 #undef ISOLATE_TIMELINE_STREAM_INIT
 
@@ -1013,6 +1014,10 @@ bool Isolate::MakeRunnable() {
   if (event != NULL) {
     event->Instant("Runnable");
     event->Complete();
+  }
+  if (Service::isolate_stream.enabled()) {
+    ServiceEvent runnableEvent(this, ServiceEvent::kIsolateRunnable);
+    Service::HandleEvent(&runnableEvent);
   }
   return true;
 }
@@ -1477,11 +1482,6 @@ void Isolate::Shutdown() {
 
     // Write out the coverage data if collection has been enabled.
     CodeCoverage::Write(this);
-
-    if ((timeline_event_recorder_ != NULL) &&
-        (FLAG_timeline_trace_dir != NULL)) {
-      timeline_event_recorder_->WriteTo(FLAG_timeline_trace_dir);
-    }
   }
 
   // Remove this isolate from the list *before* we start tearing it down, to
@@ -1652,21 +1652,6 @@ void Isolate::VisitPrologueWeakPersistentHandles(HandleVisitor* visitor) {
 }
 
 
-void Isolate::SetTimelineEventRecorder(
-    TimelineEventRecorder* timeline_event_recorder) {
-#define ISOLATE_TIMELINE_STREAM_SET_BUFFER(name, enabled_by_default)           \
-  stream_##name##_.set_recorder(timeline_event_recorder);
-  ISOLATE_TIMELINE_STREAM_LIST(ISOLATE_TIMELINE_STREAM_SET_BUFFER)
-#undef ISOLATE_TIMELINE_STREAM_SET_BUFFER
-  timeline_event_recorder_ = timeline_event_recorder;
-}
-
-void Isolate::RemoveTimelineEventRecorder() {
-  SetTimelineEventRecorder(NULL);
-  delete timeline_event_recorder_;
-}
-
-
 void Isolate::PrintJSON(JSONStream* stream, bool ref) {
   JSONObject jsobj(stream);
   jsobj.AddProperty("type", (ref ? "@Isolate" : "Isolate"));
@@ -1707,7 +1692,7 @@ void Isolate::PrintJSON(JSONStream* stream, bool ref) {
     ASSERT(debugger()->PauseEvent() == NULL);
     ServiceEvent pause_event(this, ServiceEvent::kPauseExit);
     jsobj.AddProperty("pauseEvent", &pause_event);
-  } else if (debugger()->PauseEvent() != NULL) {
+  } else if (debugger()->PauseEvent() != NULL && !resume_request_) {
     ServiceEvent pause_event(debugger()->PauseEvent());
     jsobj.AddProperty("pauseEvent", &pause_event);
   } else {
@@ -1723,7 +1708,9 @@ void Isolate::PrintJSON(JSONStream* stream, bool ref) {
 
   const Library& lib =
       Library::Handle(object_store()->root_library());
-  jsobj.AddProperty("rootLib", lib);
+  if (!lib.IsNull()) {
+    jsobj.AddProperty("rootLib", lib);
+  }
 
   timer_list().PrintTimersToJSONProperty(&jsobj);
   {
@@ -1785,14 +1772,28 @@ intptr_t Isolate::ProfileInterrupt() {
     // Paused at start / exit . Don't tick.
     return 0;
   }
-  InterruptableThreadState* state = thread_state();
-  if (state == NULL) {
-    // Isolate is not scheduled on a thread.
+  // Make sure that the isolate's mutator thread does not change behind our
+  // backs. Otherwise we find the entry in the registry and end up reading
+  // the field again. Only by that time it has been reset to NULL because the
+  // thread was in process of exiting the isolate.
+  Thread* mutator = mutator_thread_;
+  if (mutator == NULL) {
+    // No active mutator.
     ProfileIdle();
     return 1;
   }
-  ASSERT(state->id != OSThread::kInvalidThreadId);
-  ThreadInterrupter::InterruptThread(state);
+
+  // TODO(johnmccutchan): Sample all threads, not just the mutator thread.
+  // TODO(johnmccutchan): Keep a global list of threads and use that
+  // instead of Isolate.
+  ThreadRegistry::EntryIterator it(thread_registry());
+  while (it.HasNext()) {
+    const ThreadRegistry::Entry& entry = it.Next();
+    if (entry.thread == mutator) {
+      ThreadInterrupter::InterruptThread(mutator);
+      break;
+    }
+  }
   return 1;
 }
 
@@ -1943,19 +1944,6 @@ void Isolate::RemoveIsolateFromList(Isolate* isolate) {
   }
   UNREACHABLE();
 }
-
-
-#if defined(DEBUG)
-void Isolate::CheckForDuplicateThreadState(InterruptableThreadState* state) {
-  MonitorLocker ml(isolates_list_monitor_);
-  ASSERT(state != NULL);
-  Isolate* current = isolates_list_head_;
-  while (current) {
-    ASSERT(current->thread_state() != state);
-    current = current->next_;
-  }
-}
-#endif
 
 
 template<class T>
